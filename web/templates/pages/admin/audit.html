@@ -1,0 +1,23 @@
+{{define "content"}}
+<div class="page-head">
+  <div>
+    <h1>Audit log</h1>
+    {{with .Filter}}
+      <p class="muted">Done by or to <strong>{{.Name}}</strong> · <a href="/admin/audit">Show everyone</a> · <a href="/admin/users/{{.ID}}">Edit {{.Username}}</a></p>
+    {{else}}
+      <p class="muted">Sign-ins, failed attempts and every change to an account, newest first.</p>
+    {{end}}
+  </div>
+</div>
+{{if .Entries}}
+  <div class="table-wrap">
+    <table class="table table--stack">
+      <thead><tr><th>When</th><th>Who</th><th>What</th><th>From</th></tr></thead>
+      <tbody>{{range .Entries}}{{template "audit-row" .}}{{end}}</tbody>
+    </table>
+  </div>
+  {{with .Older}}<div class="pager"><a class="btn btn--sm" href="{{.}}">Older</a></div>{{end}}
+{{else}}
+  <div class="empty"><p>Nothing logged yet.</p></div>
+{{end}}
+{{end}}

@@ -1,0 +1,31 @@
+{{define "content"}}
+<div class="page-head">
+  <div>
+    <h1>Hello, {{.User.Name}}</h1>
+    <p class="muted">Your church apps. You're signed in to all of them from here.</p>
+  </div>
+</div>
+{{$open := 0}}
+<div class="launcher">
+  {{range .Apps}}
+    {{if and (not .Suspended) .BaseURL}}
+      {{$open = 1}}
+      <a class="card card--link" href="{{.BaseURL}}">
+        <h2 class="card__title">{{.Name}}</h2>
+        <span class="launcher__role">{{if eq .Role "admin"}}<span class="badge badge--accent">Admin</span>{{else}}<span class="muted small">Open</span>{{end}}</span>
+      </a>
+    {{end}}
+  {{end}}
+</div>
+{{if not $open}}
+  <div class="empty">
+    <h2>No apps yet</h2>
+    {{if .User.IsAdmin}}
+      <p>Apps are connected to User Management in the next step of the setup. Meanwhile you can add the people who'll use them.</p>
+      <p><a class="btn btn--primary" href="/admin/users">Manage users</a></p>
+    {{else}}
+      <p>You don't have access to any of the church apps yet. Ask a user admin to add you.</p>
+    {{end}}
+  </div>
+{{end}}
+{{end}}

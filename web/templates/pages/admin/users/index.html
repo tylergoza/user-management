@@ -1,0 +1,26 @@
+{{define "content"}}
+<div class="page-head">
+  <div><h1>Users</h1><p class="muted">Everyone with an account. User admins can also add people and change what they can do.</p></div>
+  <a class="btn btn--primary" href="/admin/users/new">Add user</a>
+</div>
+<div class="table-wrap">
+  <table class="table table--stack">
+    <thead><tr><th>Username</th><th>Name</th><th>Role</th><th>Last sign-in</th><th><span class="sr-only">Actions</span></th></tr></thead>
+    <tbody>
+      {{range .Users}}
+        <tr {{if .Disabled}}class="is-disabled"{{end}}>
+          <td data-label="Username"><strong>{{.Username}}</strong>{{if eq .ID $.User.ID}} <span class="muted small">(you)</span>{{end}}</td>
+          <td data-label="Name">{{.DisplayName}}</td>
+          <td data-label="Role">
+            {{if .Disabled}}<span class="badge badge--alert">Turned off</span>
+            {{else if .IsAdmin}}<span class="badge badge--accent">User admin</span>
+            {{else}}<span class="muted">Member</span>{{end}}
+          </td>
+          <td data-label="Last sign-in">{{with .LastLoginAt}}<span title="{{fmtTime .}}">{{ago .}}</span>{{else}}<span class="muted">Never</span>{{end}}</td>
+          <td class="actions"><a class="btn btn--ghost btn--sm" href="/admin/users/{{.ID}}">Edit</a></td>
+        </tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}

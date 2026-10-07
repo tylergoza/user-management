@@ -1,0 +1,29 @@
+{{define "content"}}
+<div class="auth-card card">
+  <h1>Welcome</h1>
+  <p class="muted">No accounts exist yet. Create the first user admin: the person who adds people and decides who can use which app.</p>
+  {{template "errors" .Errors}}
+  <form method="post" action="/setup" class="form">
+    {{template "csrf" .CSRF}}
+    <div class="field">
+      <label for="site_name">Site name</label>
+      <input id="site_name" name="site_name" value="{{.SiteNameValue}}" required>
+      <p class="hint">Shown in the header, on the sign-in page and on the installed app, e.g. "Mountain View Accounts".</p>
+    </div>
+    <div class="field">
+      <label for="display_name">Your name</label>
+      <input id="display_name" name="display_name" value="{{with .Form}}{{.DisplayName}}{{end}}" autocomplete="name">
+    </div>
+    <div class="field">
+      <label for="username">Username</label>
+      <input id="username" name="username" value="{{with .Form}}{{.Username}}{{end}}" autocomplete="username" autocapitalize="none" required>
+    </div>
+    <div class="field">
+      <label for="email">Email <span class="optional">optional</span></label>
+      <input id="email" name="email" type="email" value="{{with .Form}}{{.Email}}{{end}}" autocomplete="email">
+    </div>
+    {{template "password-fields" (dict "Required" true)}}
+    <button type="submit" class="btn btn--primary btn--block">Create account</button>
+  </form>
+</div>
+{{end}}
