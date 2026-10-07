@@ -1,0 +1,97 @@
+{{define "content"}}
+<nav class="crumbs" aria-label="Breadcrumb"><a href="/admin/users">Users</a></nav>
+<div class="page-head">
+  <div>
+    <h1>{{.Title}}{{with .Saved}}{{if .Disabled}} <span class="badge badge--alert">Turned off</span>{{end}}{{end}}</h1>
+    {{with .Saved}}<p class="muted">Added {{fmtTime .CreatedAt}} · Last sign-in {{with .LastLoginAt}}{{ago .}}{{else}}never{{end}} · Password set {{ago .PasswordChangedAt}}</p>{{end}}
+  </div>
+</div>
+<div class="two-col">
+  <div>
+    <div class="card">
+      {{template "errors" .Errors}}
+      <form method="post" action="{{if .Form.ID}}/admin/users/{{.Form.ID}}{{else}}/admin/users{{end}}" class="form">
+        {{template "csrf" .CSRF}}
+        <div class="field">
+          <label for="username">Username</label>
+          <input id="username" name="username" value="{{.Form.Username}}" autocapitalize="none" autocomplete="off" required>
+          {{if .Form.ID}}<p class="hint">Changing it changes what they type to sign in.</p>{{end}}
+        </div>
+        <div class="field">
+          <label for="display_name">Name <span class="optional">optional</span></label>
+          <input id="display_name" name="display_name" value="{{.Form.DisplayName}}" autocomplete="off">
+        </div>
+        <div class="field">
+          <label for="email">Email <span class="optional">optional</span></label>
+          <input id="email" name="email" type="email" value="{{.Form.Email}}" autocomplete="off">
+        </div>
+        <label class="check">
+          <input type="checkbox" name="is_admin" value="1" {{if .Form.IsAdmin}}checked{{end}}>
+          User admin (can add people, reset passwords and decide who can use which app)
+        </label>
+        <fieldset class="fieldset">
+          <legend>{{if .Form.ID}}Reset password <span class="optional">leave blank to keep it</span>{{else}}Password{{end}}</legend>
+          {{template "password-fields" (dict "Required" (not .Form.ID))}}
+          {{if .Form.ID}}<p class="hint">A new password signs them out everywhere. Tell them the new one in person or by phone.</p>{{end}}
+        </fieldset>
+        <div class="form__actions">
+          <button type="submit" class="btn btn--primary">Save user</button>
+          <a class="btn btn--ghost" href="/admin/users">Cancel</a>
+        </div>
+      </form>
+    </div>
+    {{with .Saved}}
+      {{if ne .ID $.User.ID}}
+        <div class="card danger-zone">
+          {{if .Disabled}}
+            <h2>Turned off</h2>
+            <p class="muted">They can't sign in to anything. Their apps keep their history.</p>
+            {{template "post-button" (dict "Action" (printf "/admin/users/%d/enable" .ID) "CSRF" $.CSRF "Label" "Turn back on" "Class" "btn--primary")}}
+          {{else}}
+            <h2>Turn off this account</h2>
+            <p class="muted">They're signed out everywhere and can't sign in again until it's turned back on. Nothing is deleted.</p>
+            {{template "post-button" (dict "Action" (printf "/admin/users/%d/disable" .ID) "CSRF" $.CSRF "Label" "Turn off account" "Class" "btn--danger-ghost" "Confirm" (printf "Turn off %s's account? They'll be signed out everywhere." .Username))}}
+          {{end}}
+        </div>
+      {{end}}
+    {{end}}
+  </div>
+  {{with .Saved}}
+  <div>
+    <section class="card">
+      <h2>Apps</h2>
+      {{if $.Apps}}
+        <ul class="session-list">
+          {{range $.Apps}}
+            <li><span>{{.Name}}</span>{{if .Suspended}}<span class="badge badge--alert">Suspended</span>{{else if eq .Role "admin"}}<span class="badge badge--accent">Admin</span>{{else}}<span class="badge">User</span>{{end}}</li>
+          {{end}}
+        </ul>
+      {{else}}
+        <p class="muted">No app access yet.</p>
+      {{end}}
+    </section>
+    <section class="card">
+      <div class="section__head">
+        <h2 class="section__title">Recent activity</h2>
+        <a class="small" href="/admin/audit?user={{.ID}}">All activity</a>
+      </div>
+      {{if $.Activity}}
+        <ul class="session-list">
+          {{range $.Activity}}
+            <li>
+              <span>
+                {{if and .ActorID (ne .ActorID $.Saved.ID)}}{{.ActorName}}: {{end}}{{auditLabel .Action}}
+                {{if and .TargetID (ne .TargetID $.Saved.ID)}} {{.TargetName}}{{end}}
+                <span class="muted small">{{ago .At}}{{with .Detail}} · {{.}}{{end}}</span>
+              </span>
+            </li>
+          {{end}}
+        </ul>
+      {{else}}
+        <p class="muted">Nothing yet.</p>
+      {{end}}
+    </section>
+  </div>
+  {{end}}
+</div>
+{{end}}

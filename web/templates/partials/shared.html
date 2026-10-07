@@ -1,0 +1,48 @@
+{{/* Form error list. Pass .Errors ([]string). */}}
+{{define "errors"}}
+  {{if .}}
+    <div class="alert alert--error" role="alert">
+      <strong>Please fix the following:</strong>
+      <ul>{{range .}}<li>{{.}}</li>{{end}}</ul>
+    </div>
+  {{end}}
+{{end}}
+
+{{define "csrf"}}<input type="hidden" name="_csrf" value="{{.}}">{{end}}
+
+{{/* A POST button, optionally with confirmation. dict "Action" url "CSRF" token "Label" text "Confirm" message "Class" btn-classes */}}
+{{define "post-button"}}
+  <form method="post" action="{{.Action}}" class="inline-form"
+        {{with .Confirm}}data-controller="confirm" data-confirm-message-value="{{.}}" data-action="submit->confirm#check"{{end}}>
+    {{template "csrf" .CSRF}}
+    <button type="submit" class="btn btn--sm {{with .Class}}{{.}}{{else}}btn--ghost{{end}}">{{.Label}}</button>
+  </form>
+{{end}}
+
+{{/* Password and confirm fields. dict "Required" bool "New" bool */}}
+{{define "password-fields"}}
+  <div class="field">
+    <label for="password">{{if .New}}New password{{else}}Password{{end}}</label>
+    <input id="password" name="password" type="password" autocomplete="new-password" minlength="10" maxlength="72" {{if .Required}}required{{end}}>
+    <p class="hint">At least 10 characters. A few words together make a good one.</p>
+  </div>
+  <div class="field">
+    <label for="password_confirm">Confirm {{if .New}}new {{end}}password</label>
+    <input id="password_confirm" name="password_confirm" type="password" autocomplete="new-password" minlength="10" maxlength="72" {{if .Required}}required{{end}}>
+  </div>
+{{end}}
+
+{{/* One audit log entry as a table row. Pass a store.AuditEntry. */}}
+{{define "audit-row"}}
+  <tr>
+    <td data-label="When"><span title="{{fmtTime .At}}">{{ago .At}}</span></td>
+    <td data-label="Who">{{if .ActorID}}<a href="/admin/audit?user={{.ActorID}}">{{.ActorName}}</a>{{else}}<span class="muted">Nobody signed in</span>{{end}}</td>
+    <td data-label="What">
+      <span class="audit-action">{{auditLabel .Action}}</span>
+      {{if and .TargetID (ne .TargetID .ActorID)}} <a href="/admin/audit?user={{.TargetID}}">{{.TargetName}}</a>{{end}}
+      {{with .AppName}} <span class="badge badge--accent">{{.}}</span>{{end}}
+      {{with .Detail}}<div class="muted small">{{.}}</div>{{end}}
+    </td>
+    <td data-label="From" class="muted small">{{.IP}}</td>
+  </tr>
+{{end}}

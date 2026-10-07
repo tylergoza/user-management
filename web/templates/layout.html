@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>{{if .Title}}{{.Title}} · {{end}}{{.SiteName}}</title>
+  <meta name="theme-color" content="#1f5f8b">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="{{.SiteName}}">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="{{asset "icons/icon.svg"}}" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="{{asset "icons/apple-touch-icon.png"}}">
+  <link rel="stylesheet" href="{{asset "css/app.css"}}">
+  {{.ImportMap}}
+  <script type="module" src="{{asset "js/application.js"}}"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="topbar" data-controller="nav" data-action="keydown.esc@window->nav#close">
+    <div class="topbar__inner">
+      <a class="brand" href="/">
+        <img src="{{asset "icons/icon.svg"}}" alt="" width="28" height="28">
+        <span>{{.SiteName}}</span>
+      </a>
+
+      <button class="nav-toggle" type="button" aria-controls="main-nav" aria-expanded="false"
+              data-nav-target="toggle" data-action="nav#toggle">
+        <span class="sr-only">Menu</span>
+        <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path d="M3 6h18M3 12h18M3 18h18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      </button>
+
+      <nav id="main-nav" class="nav" data-nav-target="menu" aria-label="Main">
+        {{if .User}}
+          <a href="/" {{if eq .Path "/"}}aria-current="page"{{end}}>My apps</a>
+          {{if .User.IsAdmin}}
+            <a href="/admin/users" {{if eq .Path "/admin/users"}}aria-current="page"{{end}}>Users</a>
+            <a href="/admin/audit" {{if eq .Path "/admin/audit"}}aria-current="page"{{end}}>Audit log</a>
+            <a href="/admin/settings" {{if eq .Path "/admin/settings"}}aria-current="page"{{end}}>Settings</a>
+          {{end}}
+        {{end}}
+        <span class="nav__spacer"></span>
+        <button type="button" class="btn btn--ghost btn--sm" hidden
+                data-controller="pwa--install" data-action="pwa--install#prompt">Install app</button>
+        {{if .User}}
+          <a href="/account" class="nav__user" {{if eq .Path "/account"}}aria-current="page"{{end}}>{{.User.Name}}</a>
+          <form method="post" action="/logout" class="nav__form">
+            <input type="hidden" name="_csrf" value="{{.CSRF}}">
+            <button type="submit" class="btn btn--ghost btn--sm">Sign out</button>
+          </form>
+        {{end}}
+      </nav>
+    </div>
+  </header>
+
+  <div class="offline-banner" hidden data-controller="pwa--network" role="status">
+    You're offline. Reconnect to sign in or make changes.
+  </div>
+
+  <main id="main" class="container">
+    {{with .Flash}}
+      <div class="flash flash--{{.Kind}}" role="status" data-controller="flash" data-flash-timeout-value="6000">
+        <span>{{.Message}}</span>
+        <button type="button" class="flash__close" data-action="flash#dismiss" aria-label="Dismiss">×</button>
+      </div>
+    {{end}}
+    {{template "content" .}}
+  </main>
+
+  <footer class="footer container">
+    <span>{{.SiteName}}</span>
+  </footer>
+</body>
+</html>

@@ -5,7 +5,8 @@ production planner stop keeping their own passwords and sign people in
 through this app instead. Each person has one username and password, and an
 admin adds people and sets what they can do in each app from here.
 
-Status: plan only. Nothing is built yet.
+Status: step 1 of the build order (this service, standalone) is built.
+Steps 2 onward are not.
 
 ## What the apps do today
 
@@ -40,7 +41,7 @@ session cookie. What I'd change is where the password gets typed in.
 "authorization code" flow), built small, without extra libraries.**
 
 1. Someone opens the planner without a session. The planner sends them to
-   `accounts.<domain>/authorize?client_id=planner&...`.
+   `accounts.<church domain>/authorize?client_id=planner&...`.
 2. If they don't have a session on this service, they sign in here. **This is
    the only page where a password is ever typed.**
 3. This service sends them back to `planner/auth/callback?code=...`, using a
@@ -132,7 +133,7 @@ notices on its next check, within 5 minutes.
 ```sql
 users        (id, username UNIQUE NOCASE, display_name, email, password_hash,
               disabled, is_admin,        -- admin of THIS service
-              password_changed_at, created_at)
+              password_changed_at, last_login_at, created_at)
 apps         (id, client_id UNIQUE, name, base_url, redirect_uris,
               secret_hash, roles,        -- e.g. 'user,admin' (the roles this app understands)
               created_at)
@@ -140,10 +141,10 @@ user_apps    (user_id, app_id, role,     -- no row = no access to that app
               suspended,                 -- app admin turned access off; row kept
               locked,                    -- user admin pinned it; app admins can't change it
               granted_by, updated_by, updated_at)
-sessions     (token_hash, user_id, csrf_token, expires_at, ...)      -- um_session
-auth_codes   (code_hash, app_id, user_id, redirect_uri, pkce_challenge, expires_at)
-grants       (id_hash, app_id, user_id, session_token_hash, created_at, last_checked_at)
-audit_log    (id, at, actor_user_id, action, target, detail, ip)
+sessions     (id, token_hash, user_id, ip, user_agent, expires_at, last_seen_at, ...)  -- um_session
+auth_codes   (code_hash, app_id, user_id, session_id, redirect_uri, pkce_challenge, expires_at)
+grants       (id_hash, app_id, user_id, session_id, created_at, last_checked_at)
+audit_log    (id, at, actor_user_id, action, target_user_id, app_id, detail, ip)
 settings     (key, value)
 ```
 
@@ -327,11 +328,24 @@ migration can be rehearsed against copies of the production databases first.
   then, the apps keep working with local login.
 - Secrets come from env vars (`UM_TRACKER_SECRET`, `UM_PLANNER_SECRET`), never
   files.
-- DNS: add a subdomain, e.g. `accounts.<church domain>`.
+- DNS: add the `accounts.<church domain>` subdomain.
 
-## Build order (for the next session)
+## Build order
 
-1. **This service, standalone:** skeleton copied from the planner (main,
+Notes from step 1, for step 2:
+
+- All the tables above already exist (`001_initial.sql`). Grants and codes
+  point at `sessions.id`, so ending a session here (sign-out, password
+  change, account turned off) deletes its grants and codes by cascade.
+- The CSRF middleware checks every POST. `/token` and the `/api/v1/` routes
+  are called server-to-server, so they need to skip it (they authenticate
+  with the client secret instead).
+- `/login?next=/authorize?...` already keeps the query string (see
+  `safeRedirect`).
+- `/logout` is POST only today; apps will redirect a browser to it, so it
+  needs a GET form that asks to confirm, or a signed `post_logout` flow.
+
+1. **Done.** **This service, standalone:** skeleton copied from the planner (main,
    store, migrations, templates, Stimulus, PWA), users, sessions, login,
    setup, account, admin users, audit log. Tests.
 2. **SSO endpoints:** apps registry, `/authorize`, `/token`, grant check,
@@ -354,14 +368,14 @@ migration can be rehearsed against copies of the production databases first.
 8. **Cleanup** after a few weeks: remove the local password code paths
    (keep break-glass).
 
-## Decisions to make
+## Decisions (2026-10-06)
 
-- **Domain:** `accounts.<church domain>`? Or `login.`, `users.`?
-- **Roles per app:** just `user` / `admin` for now (matches today), or should
-  the tracker get something like a read-only role for volunteers who only
-  report problems?
-- **Session lengths:** 30 days here, the apps as they are today? Church
-  volunteers will appreciate not signing in often.
-- **Later:** passkeys (WebAuthn needs either a dependency or a fair bit of
-  code), email for "forgot password" (needs SMTP; until then an admin resets
-  passwords).
+- **Domain:** `accounts.<church domain>`.
+- **Roles per app:** just `user` / `admin` for now, matching today. A
+  read-only or `reporter` role can be added to an app's `roles` later.
+- **Session lengths:** 30 days, sliding, here. The apps keep theirs as they
+  are today.
+- **Password resets:** an admin resets them; no email or SMTP. Everyone can
+  change their own password on `/account`.
+- **Passkeys:** wanted, as an optional way to sign in. Talk through the
+  approach once the build order above is done; not part of it.

@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="112" fill="#1f5f8b"/>
+  <!-- person -->
+  <circle cx="256" cy="190" r="78" fill="#fff"/>
+  <path d="M120 408 A136 128 0 0 1 392 408 Z" fill="#fff"/>
+  <!-- name bar -->
+  <rect x="120" y="428" width="272" height="26" rx="8" fill="#f4c34d"/>
+</svg>
