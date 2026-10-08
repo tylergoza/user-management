@@ -30,14 +30,16 @@ port 8100, so the tracker (8080) and planner (8090) can run alongside it.
 |------|--------------|
 | My apps | After signing in, a tile for each app you can use. |
 | My account | Change your password (which signs you out everywhere else), see your apps, and see where you're signed in, with sign-out for any other device. |
-| Users | User admins add people, edit their username, name and email, reset passwords, and turn accounts off and back on. Nothing is deleted, so the apps keep their history. Each person's page shows their recent activity. |
+| Users | User admins add people, edit their username, name and email, reset passwords, and turn accounts off and back on. Nothing is deleted, so the apps keep their history. The list shows everyone's access to each app; each person's page sets it (role, suspended, locked) and shows their recent activity. |
+| Apps | Register an app (client ID, redirect URIs, roles). Its client secret is shown once; make a new one any time. |
+| Single sign-on | OAuth 2 authorization code flow with PKCE: `/authorize`, `/token`, and grant checks at `/api/v1/grant`. App admins change roles and suspend people from inside their app through `/api/v1/apps/{client_id}/users`. See PLAN.md for the details the apps need. |
 | Audit log | Sign-ins, failed attempts and every change to an account, filterable by person. |
 | Settings | Site name and a database backup download. |
 | Sign-in | Passwords are bcrypt hashes; session tokens are stored only as SHA-256 hashes. Sessions last 30 days from last use. Sign-in attempts are limited per address and per username. |
 | Offline | Installable as an app. No pages are kept offline, since account pages shouldn't linger on a device. |
 
-Not built yet (see PLAN.md's build order): signing in to the apps (`/authorize`,
-`/token`, grant checks), the apps registry, per-app roles, and the app-admin API.
+Not built yet (see PLAN.md's build order): the `import-users` command, the
+apps' side of sign-in, and the Ansible deployment.
 
 ## Configuration
 

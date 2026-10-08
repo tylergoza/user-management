@@ -1,11 +1,11 @@
 {{define "content"}}
 <div class="page-head">
-  <div><h1>Users</h1><p class="muted">Everyone with an account. User admins can also add people and change what they can do.</p></div>
+  <div><h1>Users</h1><p class="muted">Everyone with an account, and what they can use. Open someone to change their access to an app.</p></div>
   <a class="btn btn--primary" href="/admin/users/new">Add user</a>
 </div>
 <div class="table-wrap">
   <table class="table table--stack">
-    <thead><tr><th>Username</th><th>Name</th><th>Role</th><th>Last sign-in</th><th><span class="sr-only">Actions</span></th></tr></thead>
+    <thead><tr><th>Username</th><th>Name</th><th>Role</th>{{range .Apps}}<th>{{.Name}}</th>{{end}}<th>Last sign-in</th><th><span class="sr-only">Actions</span></th></tr></thead>
     <tbody>
       {{range .Users}}
         <tr {{if .Disabled}}class="is-disabled"{{end}}>
@@ -16,6 +16,17 @@
             {{else if .IsAdmin}}<span class="badge badge--accent">User admin</span>
             {{else}}<span class="muted">Member</span>{{end}}
           </td>
+          {{$row := index $.Grid .ID}}
+          {{range $.Apps}}
+            {{$a := index $row .ID}}
+            <td data-label="{{.Name}}" {{if and $a.Has $a.UpdatedByName}}title="Changed by {{$a.UpdatedByName}} {{ago $a.UpdatedAt}}"{{end}}>
+              {{if $a.Has}}
+                {{if eq $a.Role "admin"}}<span class="badge badge--accent">Admin</span>{{else}}<span class="badge">{{$a.Role}}</span>{{end}}
+                {{if $a.Suspended}}<span class="badge badge--alert">Suspended</span>{{end}}
+                {{if $a.Locked}}<span class="badge badge--warn">Locked</span>{{end}}
+              {{else}}<span class="muted">No access</span>{{end}}
+            </td>
+          {{end}}
           <td data-label="Last sign-in">{{with .LastLoginAt}}<span title="{{fmtTime .}}">{{ago .}}</span>{{else}}<span class="muted">Never</span>{{end}}</td>
           <td class="actions"><a class="btn btn--ghost btn--sm" href="/admin/users/{{.ID}}">Edit</a></td>
         </tr>

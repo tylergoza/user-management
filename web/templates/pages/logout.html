@@ -1,0 +1,13 @@
+{{define "content"}}
+<div class="auth-card card">
+  <h1>Sign out?</h1>
+  <p>This signs you out of {{.SiteName}} and every church app on this device.</p>
+  <div class="form__actions">
+    <form method="post" action="/logout" class="inline-form">
+      {{template "csrf" .CSRF}}
+      <button type="submit" class="btn btn--primary">Sign out</button>
+    </form>
+    <a class="btn btn--ghost" href="/">Stay signed in</a>
+  </div>
+</div>
+{{end}}

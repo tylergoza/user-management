@@ -41,7 +41,16 @@ func newTestServer(t *testing.T) (*client, *store.Store) {
 // another is a second browser on the same server, with its own cookies.
 func (c *client) another() *client {
 	jar, _ := cookiejar.New(nil)
-	return &client{t: c.t, base: c.base, http: &http.Client{Jar: jar}}
+	base, _ := url.Parse(c.base)
+	return &client{t: c.t, base: c.base, http: &http.Client{Jar: jar,
+		// Follow redirects within this server, but stop at one to an app
+		// (https://planner.test/...) so the test can read it.
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if req.URL.Host != base.Host {
+				return http.ErrUseLastResponse
+			}
+			return nil
+		}}}
 }
 
 func (c *client) get(path string, wantStatus int) string {

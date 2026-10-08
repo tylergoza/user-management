@@ -59,15 +59,30 @@
   {{with .Saved}}
   <div>
     <section class="card">
-      <h2>Apps</h2>
-      {{if $.Apps}}
-        <ul class="session-list">
-          {{range $.Apps}}
-            <li><span>{{.Name}}</span>{{if .Suspended}}<span class="badge badge--alert">Suspended</span>{{else if eq .Role "admin"}}<span class="badge badge--accent">Admin</span>{{else}}<span class="badge">User</span>{{end}}</li>
-          {{end}}
-        </ul>
+      <h2>App access</h2>
+      {{if $.Access}}
+        <p class="hint">App admins can change the role or suspend people from inside their app, unless the row is locked here.</p>
+        {{range $.Access}}
+          <form method="post" action="/admin/users/{{$.Saved.ID}}/apps/{{.App.ID}}" class="access-form">
+            {{template "csrf" $.CSRF}}
+            <div class="access-form__head">
+              <strong>{{.App.Name}}</strong>
+              {{if and .Access.Has .Access.UpdatedByName}}<span class="muted small" title="{{fmtTime .Access.UpdatedAt}}">Changed by {{.Access.UpdatedByName}} {{ago .Access.UpdatedAt}}</span>{{end}}
+            </div>
+            <div class="access-form__fields">
+              <select name="role" aria-label="{{.App.Name}} access">
+                <option value="">No access</option>
+                {{$role := .Access.Role}}
+                {{range .App.Roles}}<option value="{{.}}" {{if eq . $role}}selected{{end}}>{{.}}</option>{{end}}
+              </select>
+              <label class="check"><input type="checkbox" name="suspended" value="1" {{if .Access.Suspended}}checked{{end}}> Suspended</label>
+              <label class="check"><input type="checkbox" name="locked" value="1" {{if .Access.Locked}}checked{{end}}> Locked</label>
+              <button type="submit" class="btn btn--sm">Save</button>
+            </div>
+          </form>
+        {{end}}
       {{else}}
-        <p class="muted">No app access yet.</p>
+        <p class="muted">No apps registered yet. <a href="/admin/apps/new">Register one</a> first.</p>
       {{end}}
     </section>
     <section class="card">
@@ -82,6 +97,7 @@
               <span>
                 {{if and .ActorID (ne .ActorID $.Saved.ID)}}{{.ActorName}}: {{end}}{{auditLabel .Action}}
                 {{if and .TargetID (ne .TargetID $.Saved.ID)}} {{.TargetName}}{{end}}
+                {{with .AppName}} <span class="badge badge--accent">{{.}}</span>{{end}}
                 <span class="muted small">{{ago .At}}{{with .Detail}} · {{.}}{{end}}</span>
               </span>
             </li>

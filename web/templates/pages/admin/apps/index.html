@@ -1,0 +1,29 @@
+{{define "content"}}
+<div class="page-head">
+  <div><h1>Apps</h1><p class="muted">The church apps that sign people in through here. Give people access to each one from their page under Users.</p></div>
+  <a class="btn btn--primary" href="/admin/apps/new">Register an app</a>
+</div>
+{{if .Apps}}
+  <div class="table-wrap">
+    <table class="table table--stack">
+      <thead><tr><th>Name</th><th>Client ID</th><th>Address</th><th>Roles</th><th><span class="sr-only">Actions</span></th></tr></thead>
+      <tbody>
+        {{range .Apps}}
+          <tr>
+            <td data-label="Name"><strong>{{.Name}}</strong></td>
+            <td data-label="Client ID"><code>{{.ClientID}}</code></td>
+            <td data-label="Address">{{with .BaseURL}}<a href="{{.}}">{{.}}</a>{{else}}<span class="muted">None</span>{{end}}</td>
+            <td data-label="Roles">{{range $i, $r := .Roles}}{{if $i}}, {{end}}{{$r}}{{end}}</td>
+            <td class="actions"><a class="btn btn--ghost btn--sm" href="/admin/apps/{{.ID}}">Edit</a></td>
+          </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+{{else}}
+  <div class="empty">
+    <h2>No apps yet</h2>
+    <p>Register the maintenance tracker and the production planner here. Each one gets a client ID and secret to put in its configuration.</p>
+  </div>
+{{end}}
+{{end}}

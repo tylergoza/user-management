@@ -5,8 +5,8 @@ production planner stop keeping their own passwords and sign people in
 through this app instead. Each person has one username and password, and an
 admin adds people and sets what they can do in each app from here.
 
-Status: step 1 of the build order (this service, standalone) is built.
-Steps 2 onward are not.
+Status: steps 1 (this service, standalone) and 2 (SSO endpoints) of the
+build order are built. Steps 3 onward are not.
 
 ## What the apps do today
 
@@ -110,7 +110,8 @@ No signing keys, no JWKS, no new dependencies. We only need `crypto/rand`,
 
 Each app session stores the **grant ID** it got at sign-in. At most every
 **5 minutes** per session, the app's `loadSession` middleware calls
-`GET /api/v1/grants/{id}` on this service:
+`GET /api/v1/grant` on this service, with the grant ID in an `X-Grant`
+header (not the path, so grant IDs stay out of request logs):
 
 - `200` with the current user and role: the app updates its local user row
   and carries on.
@@ -124,8 +125,11 @@ This avoids building "back-channel logout" pushes, retries, and the endpoints
 apps would need to receive them. All the apps are on the same droplet, so
 these calls go to `http://127.0.0.1:<port>` and are very cheap.
 
-**Sign-out:** the app clears its session and redirects to `/logout` here,
-which ends the central session and every grant tied to it. The other app
+**Sign-out:** the app clears its session and calls `POST /api/v1/logout`
+(with `X-Grant`) server-to-server, which ends the central session and every
+grant tied to it. Then it sends the browser to its own sign-in. Doing it
+server-to-server means no confirm page and no logout CSRF. `GET /logout`
+here is a confirm page for people. The other app
 notices on its next check, within 5 minutes.
 
 ## Data model (this service)
@@ -332,23 +336,44 @@ migration can be rehearsed against copies of the production databases first.
 
 ## Build order
 
-Notes from step 1, for step 2:
+Notes from step 2, for the apps (steps 4 and 5):
 
-- All the tables above already exist (`001_initial.sql`). Grants and codes
-  point at `sessions.id`, so ending a session here (sign-out, password
-  change, account turned off) deletes its grants and codes by cascade.
-- The CSRF middleware checks every POST. `/token` and the `/api/v1/` routes
-  are called server-to-server, so they need to skip it (they authenticate
-  with the client secret instead).
-- `/login?next=/authorize?...` already keeps the query string (see
-  `safeRedirect`).
-- `/logout` is POST only today; apps will redirect a browser to it, so it
-  needs a GET form that asks to confirm, or a signed `post_logout` flow.
+- Every call to `/token` and `/api/v1/` sends the app's client ID and
+  secret with HTTP Basic auth. Errors are JSON:
+  `{"error": "code", "error_description": "..."}`.
+- `/authorize` needs `response_type=code`, `client_id`, an exactly
+  registered `redirect_uri`, a non-empty `state`, and
+  `code_challenge_method=S256` with a `code_challenge`.
+- `POST /token` (form): `grant_type=authorization_code`, `code`,
+  `redirect_uri`, `code_verifier`. It returns
+  `{"grant": "...", "user": {"sub", "username", "name", "email", "role",
+  "user_admin"}}`. `sub` is a string; keep it as `sso_subject`. `name` may
+  be empty. `user_admin` is for the "Manage in User Management" link.
+- `GET /api/v1/grant` returns `{"user": {...}}` the same way, or 401 when
+  the app should sign the person out.
+- `GET /api/v1/apps/{client_id}/users` needs only the app's secret (no
+  acting grant), so the people pickers can use it too. It returns
+  `{"roles": [...], "users": [{...user, "suspended", "locked", "disabled",
+  "active", "updated_by", "updated_at"}]}`.
+- `PATCH /api/v1/apps/{client_id}/users/{sub}` takes JSON `{"role"}`
+  and/or `{"suspended"}`, plus `X-Acting-Grant`. Refusals: 401 (bad acting
+  grant), 403 `forbidden` (not an app admin) or `locked`, 404 `no_access`,
+  409 `last_admin`, 422 `bad_role`.
+- An app's grant check counts as using the session here, so someone who
+  only uses the apps isn't signed out after 30 days.
+- The CSP `form-action` lists the origins of every registered redirect URI.
+  Browsers apply it to the redirects after the sign-in form, and the last
+  one goes to the app.
+- Registering an app shows `SSO_CLIENT_ID` / `SSO_CLIENT_SECRET` once.
+  Roles must include `admin`.
+- User admins edit app access on each person's page (one small form per
+  app). The Users list shows the grid read-only. Editing every cell in a
+  grid was too cramped on a phone.
 
 1. **Done.** **This service, standalone:** skeleton copied from the planner (main,
    store, migrations, templates, Stimulus, PWA), users, sessions, login,
    setup, account, admin users, audit log. Tests.
-2. **SSO endpoints:** apps registry, `/authorize`, `/token`, grant check,
+2. **Done.** **SSO endpoints:** apps registry, `/authorize`, `/token`, grant check,
    app-admin users API (list + PATCH), logout. Tests for the flow, including
    the attacks: wrong redirect URI, reused code, bad PKCE, wrong secret,
    disabled user. For the app-admin API, also test:

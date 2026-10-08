@@ -1,0 +1,14 @@
+{{define "content"}}
+<div class="auth-card card">
+  <h1>No access to {{.App.Name}}</h1>
+  <p>You're signed in as <strong>{{.User.Username}}</strong>, but that account can't use {{.App.Name}}. Ask a user admin if you need it.</p>
+  <div class="form__actions">
+    <a class="btn btn--primary" href="/">My apps</a>
+    <form method="post" action="/logout" class="inline-form">
+      {{template "csrf" .CSRF}}
+      <input type="hidden" name="next" value="{{.Return}}">
+      <button type="submit" class="btn">Sign in as someone else</button>
+    </form>
+  </div>
+</div>
+{{end}}
