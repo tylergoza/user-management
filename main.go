@@ -5,6 +5,7 @@
 //	user-management create-user NAME      create a user (prompts for password)
 //	user-management reset-password NAME   set a new password for a user
 //	user-management backup FILE           write a consistent copy of the database
+//	user-management import-users ...      copy people in from the tracker and planner
 //
 // Flags such as -db go before the command. Configuration comes from flags
 // or environment variables (see README.md).
@@ -28,6 +29,7 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/tylergoza/user-management/internal/importer"
 	"github.com/tylergoza/user-management/internal/server"
 	"github.com/tylergoza/user-management/internal/store"
 )
@@ -51,7 +53,9 @@ func main() {
 	// Check the command before opening the database, so a typo or a
 	// misplaced flag doesn't quietly create an empty database somewhere.
 	args := flag.Args()
-	if err := checkCommand(args); err != nil {
+	if err := checkCommand(args); errors.Is(err, flag.ErrHelp) {
+		os.Exit(0)
+	} else if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(2)
 	}
@@ -125,7 +129,10 @@ var commandUsage = map[string]string{
 	"create-user":    "create-user USERNAME [--admin]",
 	"reset-password": "reset-password USERNAME",
 	"backup":         "backup DEST_FILE",
+	"import-users":   "import-users --tracker FILE --planner FILE [--tracker-url URL] [--planner-url URL] [--prefer tracker|planner] [--dry-run]",
 }
+
+const commandList = "create-user, reset-password, backup, import-users"
 
 // checkCommand validates a command line before anything touches the
 // database. Flags belong before the command; after it they'd be ignored.
@@ -135,7 +142,12 @@ func checkCommand(args []string) error {
 	}
 	usage, ok := commandUsage[args[0]]
 	if !ok {
-		return fmt.Errorf("unknown command %q (commands: create-user, reset-password, backup)", args[0])
+		return fmt.Errorf("unknown command %q (commands: %s)", args[0], commandList)
+	}
+	if args[0] == "import-users" {
+		// This one has its own flags, after the command.
+		_, err := importer.ParseArgs(args[1:], os.Stderr)
+		return err
 	}
 	rest := args[1:]
 	if args[0] == "create-user" {
@@ -193,8 +205,14 @@ func runCommand(st *store.Store, args []string) error {
 			return err
 		}
 		fmt.Println("Backup written to", args[1])
+	case "import-users":
+		opts, err := importer.ParseArgs(args[1:], os.Stderr)
+		if err != nil {
+			return err
+		}
+		return importer.Run(st, opts, os.Stdout)
 	default:
-		return fmt.Errorf("unknown command %q (commands: create-user, reset-password, backup)", args[0])
+		return fmt.Errorf("unknown command %q (commands: %s)", args[0], commandList)
 	}
 	return nil
 }

@@ -38,8 +38,8 @@ port 8100, so the tracker (8080) and planner (8090) can run alongside it.
 | Sign-in | Passwords are bcrypt hashes; session tokens are stored only as SHA-256 hashes. Sessions last 30 days from last use. Sign-in attempts are limited per address and per username. |
 | Offline | Installable as an app. No pages are kept offline, since account pages shouldn't linger on a device. |
 
-Not built yet (see PLAN.md's build order): the `import-users` command, the
-apps' side of sign-in, and the Ansible deployment.
+Not built yet (see PLAN.md's build order): the apps' side of sign-in and the
+Ansible deployment.
 
 ## Configuration
 
@@ -59,9 +59,29 @@ Set with a flag or an environment variable. Flags go **before** any command.
 user-management create-user alice [--admin]   # prompts for a password (10–72 characters)
 user-management reset-password alice          # also signs alice out everywhere
 user-management backup /path/to/copy.db
+user-management import-users \
+    --tracker /var/lib/.../maintenance.db --tracker-url https://maintenance.example.org \
+    --planner /var/lib/production-planner/productions.db --planner-url https://planner.example.org \
+    [--prefer tracker|planner] [--dry-run]
 ```
 
 The first user created is always a user admin.
+
+`import-users` copies people from the tracker's and planner's own users
+tables (opened read-only; either can be left out). People are matched by
+username, ignoring case, and keep their current password (the bcrypt hash is
+copied). Each gets `admin` or `user` access to the apps they were in, from
+their `is_admin`. If someone's passwords differ between the apps, the one
+from the app they used most recently is kept, unless `--prefer` says
+otherwise; the choice is printed. The apps are registered as `tracker` and
+`planner` (redirect URI `<url>/auth/callback`, roles `user, admin`) if they
+aren't already, and their `SSO_CLIENT_ID` / `SSO_CLIENT_SECRET` are printed
+once. The `-url` flags are only needed for an app that isn't registered yet.
+If this service has no users yet, one imported admin becomes a user admin
+here (an admin of both apps first, then alphabetically). Running it again is
+safe: people already here are left alone apart from getting access to an app
+they don't have yet, and registered apps keep their secrets.
+`import-users -h` has the details.
 
 ## Tests
 

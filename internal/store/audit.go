@@ -39,6 +39,7 @@ var auditLabels = map[string]string{
 	"password.change":      "Changed their password",
 	"password.reset":       "Reset password",
 	"user.create":          "Added user",
+	"user.import":          "Imported user",
 	"user.update":          "Edited user",
 	"user.disable":         "Disabled user",
 	"user.enable":          "Re-enabled user",
