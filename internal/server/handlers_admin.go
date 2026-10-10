@@ -19,7 +19,17 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, err)
 		return
 	}
-	s.render(w, r, http.StatusOK, "admin/users/index", map[string]any{"Title": "Users", "Users": users})
+	apps, err := s.store.ListApps()
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	grid, err := s.store.AccessGrid()
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	s.render(w, r, http.StatusOK, "admin/users/index", map[string]any{"Title": "Users", "Users": users, "Apps": apps, "Grid": grid})
 }
 
 func (s *Server) handleUserNew(w http.ResponseWriter, r *http.Request) {
@@ -61,10 +71,19 @@ func (s *Server) userPage(w http.ResponseWriter, r *http.Request, status int, u 
 		s.serverError(w, r, err)
 		return
 	}
-	apps, err := s.store.ListUserApps(u.ID)
+	apps, err := s.store.ListApps()
 	if err != nil {
 		s.serverError(w, r, err)
 		return
+	}
+	grid, err := s.store.AccessGrid()
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	access := make([]appAccess, 0, len(apps))
+	for _, a := range apps {
+		access = append(access, appAccess{App: a, Access: grid[u.ID][a.ID]})
 	}
 	saved, err := s.store.GetUser(u.ID)
 	if err != nil {
@@ -75,7 +94,7 @@ func (s *Server) userPage(w http.ResponseWriter, r *http.Request, status int, u 
 	data["Form"] = *u
 	data["Saved"] = saved
 	data["Activity"] = activity
-	data["Apps"] = apps
+	data["Access"] = access
 	s.render(w, r, status, "admin/users/form", data)
 }
 

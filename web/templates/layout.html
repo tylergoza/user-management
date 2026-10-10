@@ -36,6 +36,7 @@
           <a href="/" {{if eq .Path "/"}}aria-current="page"{{end}}>My apps</a>
           {{if .User.IsAdmin}}
             <a href="/admin/users" {{if eq .Path "/admin/users"}}aria-current="page"{{end}}>Users</a>
+            <a href="/admin/apps" {{if eq .Path "/admin/apps"}}aria-current="page"{{end}}>Apps</a>
             <a href="/admin/audit" {{if eq .Path "/admin/audit"}}aria-current="page"{{end}}>Audit log</a>
             <a href="/admin/settings" {{if eq .Path "/admin/settings"}}aria-current="page"{{end}}>Settings</a>
           {{end}}

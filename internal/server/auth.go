@@ -33,7 +33,8 @@ func (s *Server) handleLoginForm(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, safeRedirect(r.URL.Query().Get("next")), http.StatusSeeOther)
 		return
 	}
-	s.render(w, r, http.StatusOK, "login", map[string]any{"Title": "Sign in", "Next": r.URL.Query().Get("next")})
+	next := r.URL.Query().Get("next")
+	s.render(w, r, http.StatusOK, "login", map[string]any{"Title": "Sign in", "Next": next, "App": s.appForNext(next)})
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -44,7 +45,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	userKey := "user:" + strings.ToLower(username)
 	fail := func(status int, msg string) {
 		s.render(w, r, status, "login", map[string]any{
-			"Title": "Sign in", "Next": next, "Username": username, "Error": msg,
+			"Title": "Sign in", "Next": next, "App": s.appForNext(next), "Username": username, "Error": msg,
 		})
 	}
 	if !s.limiter.allow(ip) || !s.limiter.allow(userKey) {
@@ -107,7 +108,12 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		s.audit(r, store.AuditEvent{Action: "logout"})
 	}
 	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Path: "/", MaxAge: -1})
-	s.redirect(w, r, "/login", "You have been signed out.")
+	// "Sign in as someone else" carries on to where they were going.
+	to := "/login"
+	if next := r.PostFormValue("next"); next != "" {
+		to += "?next=" + urlEscape(safeRedirect(next))
+	}
+	s.redirect(w, r, to, "You have been signed out.")
 }
 
 // First-run setup ----------------------------------------------------------

@@ -33,9 +33,16 @@ func (s *Server) routes() http.Handler {
 	// Public
 	mux.HandleFunc("GET /login", s.handleLoginForm)
 	mux.HandleFunc("POST /login", s.handleLogin)
+	mux.HandleFunc("GET /logout", s.handleLogoutForm)
 	mux.HandleFunc("POST /logout", s.handleLogout)
 	mux.HandleFunc("GET /setup", s.handleSetupForm)
 	mux.HandleFunc("POST /setup", s.handleSetup)
+
+	// Single sign-on: the browser comes to /authorize, the app calls /token
+	// and the API itself (see sso.go and api.go).
+	mux.HandleFunc("GET /authorize", s.handleAuthorize)
+	mux.Handle("POST /token", s.requireClient(s.handleToken))
+	s.apiRoutes(mux)
 
 	// Signed in
 	auth := func(pattern string, h http.HandlerFunc) { mux.Handle(pattern, s.requireUser(h)) }
@@ -54,6 +61,13 @@ func (s *Server) routes() http.Handler {
 	admin("POST /admin/users/{id}", s.handleUserUpdate)
 	admin("POST /admin/users/{id}/disable", s.handleUserDisable(true))
 	admin("POST /admin/users/{id}/enable", s.handleUserDisable(false))
+	admin("POST /admin/users/{id}/apps/{app}", s.handleUserAccess)
+	admin("GET /admin/apps", s.handleApps)
+	admin("GET /admin/apps/new", s.handleAppNew)
+	admin("POST /admin/apps", s.handleAppCreate)
+	admin("GET /admin/apps/{id}", s.handleAppEdit)
+	admin("POST /admin/apps/{id}", s.handleAppUpdate)
+	admin("POST /admin/apps/{id}/secret", s.handleAppSecret)
 	admin("GET /admin/audit", s.handleAudit)
 	admin("GET /admin/settings", s.handleSettings)
 	admin("POST /admin/settings", s.handleSettingsUpdate)
@@ -100,7 +114,11 @@ func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter 
 func (s *Server) securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
-		h.Set("Content-Security-Policy", s.csp)
+		if browserless(r.URL.Path) {
+			h.Set("Content-Security-Policy", s.csp+"; form-action 'self'")
+		} else {
+			h.Set("Content-Security-Policy", s.cspHeader())
+		}
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("Referrer-Policy", "same-origin")
@@ -113,9 +131,16 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 
 const sessionCookie = "um_session"
 
+// browserless reports whether a path is called by apps rather than
+// browsers. Those authenticate with the app's client secret, so they skip
+// sessions and CSRF.
+func browserless(path string) bool {
+	return strings.HasPrefix(path, "/static/") || path == "/token" || strings.HasPrefix(path, "/api/")
+}
+
 func (s *Server) loadSession(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/static/") {
+		if browserless(r.URL.Path) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -152,7 +177,7 @@ const csrfCookie = "um_csrf"
 
 func (s *Server) csrf(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/static/") {
+		if browserless(r.URL.Path) {
 			next.ServeHTTP(w, r)
 			return
 		}

@@ -161,3 +161,38 @@ func TestTruncate(t *testing.T) {
 		t.Errorf("got %q", got)
 	}
 }
+
+func TestGrantKeepsSessionAlive(t *testing.T) {
+	st := openTest(t)
+	id := mustUser(t, st, "sam", false)
+	app := &App{ClientID: "planner", Name: "Planner", RedirectURIs: []string{"https://p.test/cb"}, Roles: []string{"user", "admin"}}
+	if _, err := st.CreateApp(app); err != nil {
+		t.Fatal(err)
+	}
+	st.SetAccess(id, app.ID, "user", false, false, 0)
+	ttl := 30 * 24 * time.Hour
+	sess, _ := st.CreateSession(id, "", "", ttl)
+	grant, err := st.CreateGrant(app.ID, id, sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Someone who only uses the app: their session here was last used
+	// long ago and is about to expire. The app's check slides it forward.
+	st.DB.Exec(`UPDATE sessions SET last_seen_at = '2000-01-01 00:00:00', expires_at = ? WHERE id = ?`,
+		sqlTime(time.Now().Add(time.Minute)), sess.ID)
+	if _, err := st.CheckGrant(grant, app.ID, ttl); err != nil {
+		t.Fatal(err)
+	}
+	var expires string
+	st.DB.QueryRow(`SELECT expires_at FROM sessions WHERE id = ?`, sess.ID).Scan(&expires)
+	if expires < sqlTime(time.Now().Add(ttl-time.Hour)) {
+		t.Errorf("the session should have slid forward, expires %s", expires)
+	}
+
+	// An expired session ends the grant.
+	st.DB.Exec(`UPDATE sessions SET expires_at = '2000-01-01 00:00:00' WHERE id = ?`, sess.ID)
+	if _, err := st.CheckGrant(grant, app.ID, ttl); !errors.Is(err, ErrNotFound) {
+		t.Errorf("expired session: got %v", err)
+	}
+}

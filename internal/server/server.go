@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -97,6 +98,29 @@ func (s *Server) reloadSettings() {
 
 func (s *Server) SiteName() string { return s.siteName.Load().(string) }
 
+// cspHeader adds form-action to the CSP: this site plus the origin of
+// every registered redirect URI. Browsers apply form-action to the
+// redirects after a form is sent, and signing in on the way to an app ends
+// in a redirect to that app. It's read fresh each time, so an app added
+// from the command line works without a restart.
+func (s *Server) cspHeader() string {
+	list := []string{"'self'"}
+	apps, err := s.store.ListApps()
+	if err != nil {
+		s.log.Error("csp: list apps", "err", err)
+	}
+	for _, a := range apps {
+		for _, uri := range a.RedirectURIs {
+			if u, err := url.Parse(uri); err == nil && u.Host != "" {
+				if o := u.Scheme + "://" + u.Host; !slices.Contains(list, o) {
+					list = append(list, o)
+				}
+			}
+		}
+	}
+	return s.csp + "; form-action " + strings.Join(list, " ")
+}
+
 // computeAssets hashes the static tree and builds the import map. The
 // import map is an inline script, so its hash goes into the CSP.
 func (s *Server) computeAssets() error {
@@ -145,7 +169,6 @@ func (s *Server) computeAssets() error {
 		"manifest-src 'self'",
 		"worker-src 'self'",
 		"base-uri 'self'",
-		"form-action 'self'",
 		"frame-ancestors 'none'",
 	}, "; ")
 	return nil
@@ -435,6 +458,7 @@ const (
 	ctxUser ctxKey = iota
 	ctxSession
 	ctxCSRF
+	ctxApp // the app calling /token or the API
 )
 
 func currentUser(r *http.Request) *store.User {

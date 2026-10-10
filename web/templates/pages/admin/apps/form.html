@@ -1,0 +1,57 @@
+{{define "content"}}
+<nav class="crumbs" aria-label="Breadcrumb"><a href="/admin/apps">Apps</a></nav>
+<div class="page-head"><div><h1>{{.Title}}</h1></div></div>
+<div class="two-col">
+  <div>
+    <div class="card">
+      {{template "errors" .Errors}}
+      <form method="post" action="{{if .Form.ID}}/admin/apps/{{.Form.ID}}{{else}}/admin/apps{{end}}" class="form">
+        {{template "csrf" .CSRF}}
+        <div class="field">
+          <label for="client_id">Client ID</label>
+          {{if .Form.ID}}
+            <input id="client_id" value="{{.Form.ClientID}}" disabled>
+            <p class="hint">Can't be changed: the app has it in its configuration.</p>
+          {{else}}
+            <input id="client_id" name="client_id" value="{{.Form.ClientID}}" autocapitalize="none" autocomplete="off" required pattern="[a-z][a-z0-9\-]{1,31}">
+            <p class="hint">A short name the app identifies itself with, like <code>planner</code> or <code>tracker</code>. Can't be changed later.</p>
+          {{end}}
+        </div>
+        <div class="field">
+          <label for="name">Name</label>
+          <input id="name" name="name" value="{{.Form.Name}}" required maxlength="100">
+          <p class="hint">Shown on the launcher and the sign-in page.</p>
+        </div>
+        <div class="field">
+          <label for="base_url">Address <span class="optional">optional</span></label>
+          <input id="base_url" name="base_url" type="url" value="{{.Form.BaseURL}}" placeholder="https://planner.example.org">
+          <p class="hint">Where the launcher tile goes. Leave blank to hide it from the launcher.</p>
+        </div>
+        <div class="field">
+          <label for="redirect_uris">Redirect URIs</label>
+          <textarea id="redirect_uris" name="redirect_uris" rows="3" required placeholder="https://planner.example.org/auth/callback">{{.Form.RedirectURIs}}</textarea>
+          <p class="hint">One per line, matched exactly. The app's sign-in callback, plus a local one for development if you like.</p>
+        </div>
+        <div class="field">
+          <label for="roles">Roles</label>
+          <input id="roles" name="roles" value="{{.Form.Roles}}" required>
+          <p class="hint">Comma-separated, and must include <code>admin</code>. The app decides what each role can do.</p>
+        </div>
+        <div class="form__actions">
+          <button type="submit" class="btn btn--primary">{{if .Form.ID}}Save app{{else}}Register app{{end}}</button>
+          <a class="btn btn--ghost" href="/admin/apps">Cancel</a>
+        </div>
+      </form>
+    </div>
+  </div>
+  {{with .App}}
+  <div>
+    <section class="card danger-zone">
+      <h2>Client secret</h2>
+      <p class="muted">Make a new secret if the old one may have leaked. The old one stops working at once, so {{.Name}} can't sign anyone in until its configuration has the new one.</p>
+      {{template "post-button" (dict "Action" (printf "/admin/apps/%d/secret" .ID) "CSRF" $.CSRF "Label" "Make a new secret" "Class" "btn--danger-ghost" "Confirm" (printf "Make a new secret for %s? The old one stops working right away." .Name))}}
+    </section>
+  </div>
+  {{end}}
+</div>
+{{end}}

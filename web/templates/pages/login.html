@@ -1,7 +1,11 @@
 {{define "content"}}
 <div class="auth-card card">
   <h1>Sign in</h1>
-  <p class="muted">One username and password for all of the church apps.</p>
+  {{with .App}}
+    <p class="muted">to continue to <strong>{{.}}</strong>. One username and password for all of the church apps.</p>
+  {{else}}
+    <p class="muted">One username and password for all of the church apps.</p>
+  {{end}}
   {{with .Error}}<div class="alert alert--error" role="alert">{{.}}</div>{{end}}
   <form method="post" action="/login" class="form">
     {{template "csrf" .CSRF}}

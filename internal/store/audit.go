@@ -46,6 +46,14 @@ var auditLabels = map[string]string{
 	"session.revoke_other": "Signed out all other devices",
 	"settings.update":      "Changed settings",
 	"backup.download":      "Downloaded a backup",
+	"app.signin":           "Signed in to an app",
+	"app.signout":          "Signed out from an app",
+	"app.create":           "Registered an app",
+	"app.update":           "Edited an app",
+	"app.secret":           "Made a new app secret",
+	"access.grant":         "Gave app access",
+	"access.update":        "Changed app access",
+	"access.remove":        "Removed app access",
 }
 
 // AuditLabel is the readable name of an action.
