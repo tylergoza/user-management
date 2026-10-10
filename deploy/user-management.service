@@ -1,0 +1,31 @@
+# systemd unit for running the binary directly (no Docker). Install:
+#   sudo useradd --system --home-dir /var/lib/user-management --shell /usr/sbin/nologin accounts
+#   sudo install -m 755 user-management-linux-amd64 /usr/local/bin/user-management
+#   sudo cp user-management.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now user-management
+# Edit TZ below first. Run commands as the service user against the same
+# database, flags before the command:
+#   sudo -u accounts user-management -db /var/lib/user-management/users.db create-user alice --admin
+# Logs: journalctl -u user-management -f
+[Unit]
+Description=Church User Management
+After=network.target
+
+[Service]
+User=accounts
+StateDirectory=user-management
+Environment=ADDR=127.0.0.1:8100
+Environment=DB_PATH=/var/lib/user-management/users.db
+Environment=TZ=America/Chicago
+# Caddy (deploy/Caddyfile) is in front; it's the only thing that can reach
+# 127.0.0.1:8100, so its X-Forwarded-* headers can be trusted.
+Environment=TRUST_PROXY=1
+ExecStart=/usr/local/bin/user-management
+Restart=on-failure
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,42 @@
+# Copy to vars.yml (gitignored) and fill in. Anything in defaults.yml can be
+# overridden here too.
+
+# The domain as added under Networking → Domains in DigitalOcean, with your
+# registrar's nameservers pointed at ns1/ns2/ns3.digitalocean.com. The
+# provision play creates the A record for app_domain in it.
+dns_zone: example.org
+# Public address of the app (default accounts.<dns_zone>). Caddy gets its
+# HTTPS certificate for this name.
+# app_domain: accounts.example.org
+
+# Project to put the droplet in (Projects in the control panel sidebar).
+do_project: My Project
+
+# Datacenter, droplet size and OS, only used if there's no droplet tagged
+# maintenance-tracker yet. These are the defaults: New York 3, $6/month,
+# Ubuntu 26.04.
+do_region: nyc3
+do_size: s-1vcpu-1gb
+do_image: ubuntu-26-04-x64
+# Shares the maintenance tracker's droplet, found by its tag.
+droplet_name: maintenance-tracker
+# do_tag: maintenance-tracker
+
+# Extra droplet tags, e.g. ones your own cloud firewalls target. If those
+# firewalls already allow SSH/HTTP/HTTPS, also turn off the play's own.
+# do_extra_tags: [website, ssh]
+# do_firewall: false
+
+# A dedicated deploy key (see the tracker's README) instead of your default
+# ssh setup. The same key works for all three apps.
+# ssh_private_key_file: ~/.ssh/maintenance_deploy
+# ssh_identity_agent: SSH_AUTH_SOCK   # if ~/.ssh/config sends ssh to another agent
+# Your own keys (e.g. on a YubiKey) for logging in by hand alongside it.
+# ssh_authorized_keys: [~/.ssh/id_ed25519_sk.pub]
+
+# tz: America/Chicago
+
+# For import-users.yml: the apps' public addresses.
+tracker_url: https://maintenance.example.org
+planner_url: https://productions.example.org
+# prefer: tracker

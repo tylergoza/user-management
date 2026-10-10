@@ -4,3 +4,4 @@ data/
 *.db-shm
 *.db-wal
 deploy/ansible/vars.yml
+deploy/ansible/backups/

@@ -421,7 +421,8 @@ func Run(st *store.Store, o Options, out io.Writer) error {
 		st.Audit(store.AuditEvent{Action: "app.create", App: a.ID, Detail: "import-users"})
 		apps[src.Key] = a
 		fmt.Fprintf(out, "    SSO_CLIENT_ID=%s\n    SSO_CLIENT_SECRET=%s\n", a.ClientID, secret)
-		fmt.Fprintln(out, "    Save the secret now (e.g. in the vars file for Ansible): it isn't shown again.")
+		fmt.Fprintf(out, "    Save the secret now, e.g. as UM_%s_SECRET in the environment for the %s's deploy: it isn't shown again.\n",
+			strings.ToUpper(src.Key), src.Key)
 	}
 
 	// People.

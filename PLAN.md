@@ -7,7 +7,9 @@ admin adds people and sets what they can do in each app from here.
 
 Status: steps 1 to 5 of the build order are built (this service, SSO
 endpoints, `import-users`, and SSO in the planner and the tracker, each on
-an `sso` branch in its repo). Steps 6 onward are not.
+an `sso` branch in its repo). Step 6 is half done: this service's Ansible
+is built; the SSO settings in the apps' deploys are not. Steps 7 onward
+are not.
 
 ## What the apps do today
 
@@ -419,6 +421,18 @@ Notes from step 2, for the apps (steps 4 and 5):
    skips the session, and background refreshes (`X-Live-Refresh`) get a 401
    instead of starting a sign-in; the planner got the same fix for `/live`.
 6. **Ansible** for this service, and the new env vars in both apps' deploys.
+   - **Done, this service's side:** `deploy/ansible/` (`provision.yml`,
+     `deploy.yml`, plus `backup.yml` for all three databases and
+     `import-users.yml`, a dry run unless `-e dry_run=false`). README
+     "Deploying" has the rollout commands in order. Deploy leaves the app
+     stopped while it has no users (so `/setup` is never public); a real
+     import starts it. Service user `accounts`, DB
+     `/var/lib/user-management/users.db`.
+   - **Not done, the apps' side:** each app's deploy sets `SSO_URL`
+     (`https://accounts.<domain>`), `SSO_INTERNAL_URL`
+     (`http://127.0.0.1:8100`), `SSO_CLIENT_ID` (`planner` / `tracker`) and
+     `SSO_CLIENT_SECRET` from `UM_PLANNER_SECRET` / `UM_TRACKER_SECRET`, in
+     the root-only drop-in like the planner's tracker token.
 7. **Roll out.** Deploy this service and import. Then the planner, then the
    tracker, testing each from an installed PWA on a phone.
 8. **Cleanup** after a few weeks: remove the local password code paths

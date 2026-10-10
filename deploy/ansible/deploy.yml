@@ -1,0 +1,254 @@
+# Tests and builds the Linux binary on this machine, then installs it, the
+# systemd unit and its Caddy site on every droplet tagged do_tag. The database
+# is backed up first whenever the binary changes (migrations run on start).
+#
+#   export DIGITALOCEAN_TOKEN=...
+#   ansible-playbook deploy.yml             # or `make deploy` from the repo root
+#
+# While there are no users yet and admin_username is empty, the app is
+# installed but left stopped, so /setup is never open: import-users.yml
+# starts it after a real import.
+#
+# To roll back, check out the previous commit and deploy it. If its
+# migrations changed the database, restore the pre-deploy backup as well
+# (README: Moving between hosts).
+
+- name: Build
+  hosts: localhost
+  gather_facts: false
+  vars_files: [defaults.yml, vars.yml]
+  vars:
+    repo_root: "{{ playbook_dir | dirname | dirname }}"
+  tasks:
+    - name: Run the tests
+      ansible.builtin.command:
+        cmd: make test
+        chdir: "{{ repo_root }}"
+      when: not skip_tests | bool
+      changed_when: false
+
+    - name: Build the binary
+      ansible.builtin.command:
+        cmd: make build-linux
+        chdir: "{{ repo_root }}"
+      changed_when: true
+
+    - name: Find the droplets
+      ansible.builtin.include_tasks: tasks/find_droplets.yml
+
+    - name: Check there's somewhere to deploy to
+      ansible.builtin.assert:
+        that: groups['app'] | default([]) | length > 0
+        fail_msg: No droplets are tagged {{ do_tag }}. Run provision.yml first.
+        quiet: true
+
+- name: Install
+  hosts: app
+  gather_facts: false
+  vars_files: [defaults.yml, vars.yml]
+  vars:
+    binary: "{{ playbook_dir | dirname | dirname }}/bin/user-management-linux-amd64"
+    # Commands run as the service user so the files they write stay its own.
+    # runuser rather than become: Ubuntu 26.04's default sudo is sudo-rs.
+    um: [runuser, -u, "{{ app_user }}", --, "{{ app_bin }}", -db, "{{ app_db }}"]
+  handlers:
+    - name: Restart the app
+      ansible.builtin.systemd_service:
+        name: user-management
+        state: restarted
+        daemon_reload: true
+      when: not hold_start
+
+    - name: Reload Caddy
+      ansible.builtin.systemd_service:
+        name: caddy
+        state: reloaded
+  tasks:
+    - name: Checksum the new binary
+      ansible.builtin.stat:
+        path: "{{ binary }}"
+      delegate_to: localhost
+      register: new_binary
+
+    - name: Checksum the installed binary
+      ansible.builtin.stat:
+        path: "{{ app_bin }}"
+      register: old_binary
+
+    - name: Check for a database
+      ansible.builtin.stat:
+        path: "{{ app_db }}"
+      register: db
+
+    - name: Count the users
+      ansible.builtin.command:
+        argv: [runuser, -u, "{{ app_user }}", --, sqlite3, -readonly, "{{ app_db }}", SELECT count(*) FROM users]
+      register: user_count
+      when: db.stat.exists
+      changed_when: false
+
+    # No users yet means /setup would be open to whoever gets there first.
+    - name: Decide whether the app may start
+      ansible.builtin.set_fact:
+        no_users: "{{ not db.stat.exists or user_count.stdout | trim == '0' }}"
+        hold_start: "{{ (not db.stat.exists or user_count.stdout | trim == '0') and admin_username | length == 0 }}"
+
+    - name: Back up the database
+      ansible.builtin.command:
+        argv: "{{ um + ['backup', app_backup_dir ~ '/pre-deploy-' ~ now(utc=true, fmt='%Y%m%dT%H%M%SZ') ~ '.db'] }}"
+      when: db.stat.exists and old_binary.stat.checksum | default('') != new_binary.stat.checksum
+      changed_when: true
+
+    - name: Install the binary
+      ansible.builtin.copy:
+        src: "{{ binary }}"
+        dest: "{{ app_bin }}"
+        mode: "0755"
+      notify: Restart the app
+
+    - name: Install the systemd unit
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../user-management.service"
+        dest: /etc/systemd/system/user-management.service
+        mode: "0644"
+      notify: Restart the app
+
+    - name: Create the unit's drop-in folder
+      ansible.builtin.file:
+        path: /etc/systemd/system/user-management.service.d
+        state: directory
+        mode: "0755"
+
+    # The unit in the repo has a placeholder TZ; this overrides it.
+    - name: Set the time zone
+      ansible.builtin.copy:
+        content: |
+          [Service]
+          Environment=TZ={{ tz }}
+        dest: /etc/systemd/system/user-management.service.d/override.conf
+        mode: "0644"
+      notify: Restart the app
+
+    # The droplet is shared with the maintenance tracker and production
+    # planner: each app puts its own site in /etc/caddy/sites/ and the main
+    # Caddyfile (the same in every repo) imports them all.
+    - name: Read the current Caddyfile
+      ansible.builtin.slurp:
+        src: /etc/caddy/Caddyfile
+      register: caddyfile
+      failed_when: false
+
+    # An older tracker deploy wrote the whole Caddyfile with its site in it.
+    # Replacing that would take the tracker offline, so stop instead.
+    - name: Check the Caddyfile can be replaced
+      vars:
+        current: "{{ (caddyfile.content | default('') | b64decode) }}"
+      ansible.builtin.assert:
+        that: >-
+          'import /etc/caddy/sites/*.caddy' in current
+          or 'Managed by deploy/ansible' not in current
+        fail_msg: >-
+          /etc/caddy/Caddyfile was written by an older maintenance tracker deploy.
+          Deploy the updated maintenance tracker first (it moves its site into
+          /etc/caddy/sites/), then run this again.
+        quiet: true
+
+    - name: Create the Caddy sites folder
+      ansible.builtin.file:
+        path: /etc/caddy/sites
+        state: directory
+        mode: "0755"
+
+    # Before the main file, so its import never finds an empty folder.
+    - name: Install this app's Caddy site
+      ansible.builtin.template:
+        src: Caddyfile.j2
+        dest: /etc/caddy/sites/user-management.caddy
+        mode: "0644"
+        validate: caddy validate --adapter caddyfile --config %s
+      notify: Reload Caddy
+
+    - name: Install the main Caddyfile
+      ansible.builtin.copy:
+        content: |
+          # Managed by deploy/ansible in each app's repo; edits here are overwritten.
+          # Each app puts its own site in /etc/caddy/sites/.
+          import /etc/caddy/sites/*.caddy
+        dest: /etc/caddy/Caddyfile
+        mode: "0644"
+        validate: caddy validate --adapter caddyfile --config %s
+      notify: Reload Caddy
+
+    # Before the app first starts, so /setup is never reachable.
+    - name: Create the user admin
+      when: no_users and admin_username | length > 0
+      vars:
+        password: "{{ admin_password or lookup('ansible.builtin.password', '/dev/null', length=24, chars=['ascii_letters', 'digits']) }}"
+      block:
+        - name: Pick the admin password
+          ansible.builtin.set_fact:
+            new_admin_password: "{{ password }}"
+          no_log: true
+
+        - name: Create {{ admin_username }}
+          ansible.builtin.command:
+            argv: "{{ um + ['create-user', admin_username, '--admin'] }}"
+            stdin: "{{ new_admin_password }}"
+          no_log: true
+          changed_when: true
+
+    - name: Start the app
+      ansible.builtin.systemd_service:
+        name: user-management
+        enabled: true
+        state: started
+        daemon_reload: true
+      when: not hold_start
+
+    # Not enabled either, so a reboot doesn't start it with /setup open.
+    - name: Leave the app stopped until the import
+      ansible.builtin.systemd_service:
+        name: user-management
+        enabled: false
+        state: stopped
+        daemon_reload: true
+      when: hold_start
+
+    - name: Apply restarts and reloads
+      ansible.builtin.meta: flush_handlers
+
+    - name: Wait for the app to answer
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8100/healthz
+      register: health
+      until: health.status == 200
+      retries: 15
+      delay: 2
+      when: not hold_start
+
+    - name: Find old pre-deploy backups
+      ansible.builtin.find:
+        paths: "{{ app_backup_dir }}"
+        patterns: pre-deploy-*.db
+      register: backups
+
+    - name: Remove all but the newest {{ keep_backups }}
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ (backups.files | sort(attribute='mtime', reverse=true))[keep_backups | int :] }}"
+      loop_control:
+        label: "{{ item.path | basename }}"
+
+    - name: Done
+      vars:
+        held: >-
+          Installed but not started: there are no users yet, and starting now
+          would leave /setup open. Run import-users.yml (a dry run first, then
+          -e dry_run=false), which starts it at https://{{ app_domain }}.
+      ansible.builtin.debug:
+        msg: >-
+          {{ held if hold_start
+          else ('Running at https://' ~ app_domain ~ '. Sign in as ' ~ admin_username ~ ' with password ' ~ new_admin_password ~ ' and change it.')
+          if new_admin_password is defined
+          else 'Deployed to https://' ~ app_domain ~ '.' }}

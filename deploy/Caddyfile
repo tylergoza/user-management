@@ -1,0 +1,9 @@
+# Caddy gets and renews HTTPS certificates automatically. HTTPS is required
+# for secure cookies and the "Install app" (PWA) feature on phones.
+# Point the domain's DNS at this server, replace the name below, then:
+#   sudo cp Caddyfile /etc/caddy/Caddyfile && sudo systemctl reload caddy
+# Set the app's TRUST_PROXY=1.
+accounts.example.org {
+	encode gzip
+	reverse_proxy 127.0.0.1:8100
+}

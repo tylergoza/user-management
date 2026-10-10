@@ -38,8 +38,8 @@ port 8100, so the tracker (8080) and planner (8090) can run alongside it.
 | Sign-in | Passwords are bcrypt hashes; session tokens are stored only as SHA-256 hashes. Sessions last 30 days from last use. Sign-in attempts are limited per address and per username. |
 | Offline | Installable as an app. No pages are kept offline, since account pages shouldn't linger on a device. |
 
-Not built yet (see PLAN.md's build order): the apps' side of sign-in and the
-Ansible deployment.
+Not built yet (see PLAN.md's build order): the SSO settings in the tracker's
+and planner's own deploys, and the rollout.
 
 ## Configuration
 
@@ -82,6 +82,78 @@ here (an admin of both apps first, then alphabetically). Running it again is
 safe: people already here are left alone apart from getting access to an app
 they don't have yet, and registered apps keep their secrets.
 `import-users -h` has the details.
+
+## Deploying
+
+The app is one binary plus one `.db` file, behind [Caddy](https://caddyserver.com)
+for HTTPS. `deploy/` has the systemd unit and a Caddyfile for doing it by
+hand. Follow the comments at the top of `deploy/user-management.service`.
+
+### DigitalOcean with Ansible
+
+`deploy/ansible/` works like the planner's and puts User Management **on the
+maintenance tracker's droplet**: it finds it by the tracker's tag
+(`maintenance-tracker`) and adds itself alongside, on 127.0.0.1:8100 with its
+own service user (`accounts`), data folder (`/var/lib/user-management`) and
+Caddy site (`/etc/caddy/sites/user-management.caddy`). The main Caddyfile it
+writes is the same as the tracker's and planner's. Provision adds the DNS
+record for `accounts.<dns_zone>` and the service user; it only creates a
+droplet if nothing carries the tag. Deploy runs the tests, builds the Linux
+binary here, backs up the database when the binary changes (keeping 10),
+installs, and checks `/healthz`.
+
+While there are no users, deploy installs the app but leaves it stopped, so
+`/setup` is never open to the internet: the import below starts it. For a
+fresh start with no import, set `admin_username` in `vars.yml` and the first
+deploy creates that user admin instead (`UM_ADMIN_PASSWORD`, or a random one
+printed at the end). Don't do that before importing: an existing `admin` here
+would be left alone by the import, keeping the new password.
+
+Run the playbooks from `deploy/ansible/`. Rolling out single sign-on, in
+order:
+
+```sh
+cd deploy/ansible
+cp vars.example.yml vars.yml       # set dns_zone, tracker_url, planner_url
+export DIGITALOCEAN_TOKEN=...
+
+# 1. DNS record for accounts.<dns_zone>, service user, then a first deploy
+ansible-playbook provision.yml
+# 2. Later updates (make deploy from the repo root does the same)
+ansible-playbook deploy.yml
+# 3. Back up all three databases, here and under deploy/ansible/backups/
+ansible-playbook backup.yml
+# 4. Dry run: shows who'd be created and which password is kept
+ansible-playbook import-users.yml                     # add -e prefer=tracker|planner to pick
+# 5. For real: backs up users.db, imports, registers both apps, starts the app
+ansible-playbook import-users.yml -e dry_run=false
+export UM_PLANNER_SECRET=...       # the planner's SSO_CLIENT_SECRET from step 5
+export UM_TRACKER_SECRET=...       # the tracker's
+# 6. Then the planner, then the tracker, each from its own repo's
+#    deploy/ansible with its SSO settings (SSO_URL=https://accounts.<domain>,
+#    SSO_INTERNAL_URL=http://127.0.0.1:8100, SSO_CLIENT_ID planner/tracker,
+#    the secret from the variable above). Test each from an installed PWA.
+```
+
+`import-users.yml` copies the tracker's and planner's databases with their
+own `backup` commands into a temporary folder only this app's service user
+can read, runs `import-users` on the copies, and always removes them. The
+client secrets are shown once, on your terminal only; the play refuses a
+real run while Ansible is set to write a log file. Keep them somewhere safe
+(a password manager) and export them before deploying the apps. Running it
+again is safe; apps already registered keep their secrets.
+
+`backup.yml` can be run any time: it skips apps that aren't installed, leaves
+`manual-<time>.db` in each app's backups folder on the droplet, and copies
+them to `deploy/ansible/backups/<time>/` (gitignored; they hold password
+hashes).
+
+### Moving between hosts
+
+**Settings → Download backup** (or the `backup` command), stop the app on the
+new host, copy the file to its database path
+(`/var/lib/user-management/users.db`, owned by `accounts`), and start it.
+Droplet backups cover all three apps when they share a droplet.
 
 ## Tests
 
