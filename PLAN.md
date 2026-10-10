@@ -5,8 +5,11 @@ production planner stop keeping their own passwords and sign people in
 through this app instead. Each person has one username and password, and an
 admin adds people and sets what they can do in each app from here.
 
-Status: steps 1 (this service, standalone) and 2 (SSO endpoints) of the
-build order are built. Steps 3 onward are not.
+Status: steps 1 to 5 of the build order are built (this service, SSO
+endpoints, `import-users`, and SSO in the planner and the tracker, each on
+an `sso` branch in its repo). Step 6 is half done: this service's Ansible
+is built; the SSO settings in the apps' deploys are not. Steps 7 onward
+are not.
 
 ## What the apps do today
 
@@ -382,12 +385,54 @@ Notes from step 2, for the apps (steps 4 and 5):
    - A locked row.
    - Granting new access.
    - Demoting the last admin.
-3. **`import-users` command:** rehearse against copies of both production
-   databases.
-4. **Planner:** `internal/sso`, migration, routes, user sync, app-admin
+3. **Done.** **`import-users` command:** rehearse against copies of both
+   production databases. Built in `internal/importer`. Notes:
+   - Neither app records when a password changed, so "newer" means the later
+     of the user's `created_at` and their newest session in that app (a
+     password change deletes sessions, so the next sign-in shows which
+     password is in use). A tie keeps the tracker's and says so;
+     `--prefer` overrides.
+   - People already here are never changed; they only get access rows for
+     apps they don't have one for yet. Existing access rows and app secrets
+     are never touched, so a re-run is safe.
+   - If this service has no users, one imported admin becomes the user
+     admin: an admin of both apps first, then alphabetically.
+   - Sources are opened `mode=ro` with `query_only`. A WAL-mode copy may get
+     an empty `-wal`/`-shm` beside it; the database file itself doesn't
+     change.
+
+   To rehearse: copy the live databases with each app's `backup` command
+   (or `sqlite3 FILE ".backup copy.db"`), then run, on a laptop or the
+   droplet:
+
+   ```sh
+   user-management -db /tmp/rehearsal/users.db import-users --dry-run \
+       --tracker /tmp/rehearsal/maintenance.db --tracker-url https://maintenance.<domain> \
+       --planner /tmp/rehearsal/productions.db --planner-url https://planner.<domain>
+   ```
+
+   Then without `--dry-run`, sign in at `DB_PATH=/tmp/rehearsal/users.db make dev`
+   using the existing password, check the Users grid,
+   and run it a second time to see it skip everything. Throw the rehearsal
+   `users.db` away afterwards; its client secrets aren't the real ones.
+4. **Done.** **Planner:** `internal/sso`, migration, routes, user sync, app-admin
    Users page. Local login stays as a fallback when `SSO_URL` is unset.
-5. **Tracker:** the same change.
+5. **Done.** **Tracker:** the same change. Its live-update stream (`/events`)
+   skips the session, and background refreshes (`X-Live-Refresh`) get a 401
+   instead of starting a sign-in; the planner got the same fix for `/live`.
 6. **Ansible** for this service, and the new env vars in both apps' deploys.
+   - **Done, this service's side:** `deploy/ansible/` (`provision.yml`,
+     `deploy.yml`, plus `backup.yml` for all three databases and
+     `import-users.yml`, a dry run unless `-e dry_run=false`). README
+     "Deploying" has the rollout commands in order. Deploy leaves the app
+     stopped while it has no users (so `/setup` is never public); a real
+     import starts it. Service user `accounts`, DB
+     `/var/lib/user-management/users.db`.
+   - **Not done, the apps' side:** each app's deploy sets `SSO_URL`
+     (`https://accounts.<domain>`), `SSO_INTERNAL_URL`
+     (`http://127.0.0.1:8100`), `SSO_CLIENT_ID` (`planner` / `tracker`) and
+     `SSO_CLIENT_SECRET` from `UM_PLANNER_SECRET` / `UM_TRACKER_SECRET`, in
+     the root-only drop-in like the planner's tracker token.
 7. **Roll out.** Deploy this service and import. Then the planner, then the
    tracker, testing each from an installed PWA on a phone.
 8. **Cleanup** after a few weeks: remove the local password code paths

@@ -1,0 +1,323 @@
+# Creates the droplet, cloud firewall and DNS record if they don't exist,
+# prepares the machine (updates, Caddy, service user), then runs deploy.yml.
+# Safe to re-run: existing things are found by tag/name and left in place.
+# By default this finds the maintenance tracker's droplet by its tag and only
+# adds what User Management needs (its DNS record, service user and folders);
+# a new droplet is created only when nothing carries the tag.
+#
+#   export DIGITALOCEAN_TOKEN=...
+#   ansible-playbook provision.yml          # or `make provision` from the repo root
+
+- name: Create the droplet, firewall and DNS record
+  hosts: localhost
+  gather_facts: false
+  vars_files: [defaults.yml, vars.yml]
+  tasks:
+    - name: Find existing droplets
+      ansible.builtin.include_tasks: tasks/find_droplets.yml
+
+    # Fixed here because a block's `when` is re-checked for every task in it,
+    # and the lookup at the end of the block changes `tagged`.
+    - name: Decide whether to create a droplet
+      ansible.builtin.set_fact:
+        create_droplet: "{{ tagged.json.droplets | length == 0 }}"
+
+    - name: Create the droplet
+      when: create_droplet
+      block:
+        - name: Look for an untagged droplet with the same name
+          ansible.builtin.uri:
+            url: https://api.digitalocean.com/v2/droplets?name={{ droplet_name }}
+            headers: "{{ do_headers }}"
+          register: same_name
+
+        - name: Don't create a second one
+          ansible.builtin.assert:
+            that: same_name.json.droplets | length == 0
+            fail_msg: >-
+              A droplet named {{ droplet_name }} exists but isn't tagged {{ do_tag }}, which is
+              how these plays find it. Add the tag back in the control panel, or delete the droplet.
+            quiet: true
+
+        - name: List SSH keys on the account
+          ansible.builtin.uri:
+            url: https://api.digitalocean.com/v2/account/keys?per_page=200
+            headers: "{{ do_headers }}"
+          register: account_keys
+
+        - name: Find the local public key on the account
+          vars:
+            # Type and key only; the trailing comment may differ.
+            local_key: "{{ (lookup('ansible.builtin.file', ssh_public_key_file | expanduser).split()[:2]) | join(' ') }}"
+          ansible.builtin.set_fact:
+            local_key: "{{ local_key }}"
+            key_ids: "{{ account_keys.json.ssh_keys | selectattr('public_key', 'match', local_key | regex_escape) | map(attribute='id') | list }}"
+
+        - name: Upload the public key
+          ansible.builtin.uri:
+            url: https://api.digitalocean.com/v2/account/keys
+            method: POST
+            headers: "{{ do_headers }}"
+            body_format: json
+            body:
+              name: "{{ droplet_name }} deploy key"
+              public_key: "{{ local_key }}"
+            status_code: 201
+          register: uploaded_key
+          when: key_ids | length == 0
+
+        - name: Create {{ droplet_name }}
+          ansible.builtin.uri:
+            url: https://api.digitalocean.com/v2/droplets
+            method: POST
+            headers: "{{ do_headers }}"
+            body_format: json
+            body:
+              name: "{{ droplet_name }}"
+              region: "{{ do_region }}"
+              size: "{{ do_size }}"
+              image: "{{ do_image }}"
+              ssh_keys: "{{ [uploaded_key.json.ssh_key.id] if uploaded_key is not skipped else key_ids }}"
+              backups: "{{ do_backups }}"
+              monitoring: "{{ do_monitoring }}"
+              tags: "{{ [do_tag] + do_extra_tags }}"
+            status_code: 202
+          register: created
+          changed_when: true
+
+        - name: Wait for it to be running
+          ansible.builtin.uri:
+            url: https://api.digitalocean.com/v2/droplets/{{ created.json.droplet.id }}
+            headers: "{{ do_headers }}"
+          register: droplet
+          until: >-
+            droplet.json.droplet.status == 'active'
+            and droplet.json.droplet.networks.v4 | selectattr('type', 'eq', 'public') | list | length > 0
+          retries: 60
+          delay: 5
+
+        - name: Pick up the new droplet
+          ansible.builtin.include_tasks: tasks/find_droplets.yml
+
+    # Droplets can't be created in a project, only moved into one afterwards.
+    - name: Put the droplets in the project
+      when: do_project | length > 0
+      block:
+        - name: List projects
+          ansible.builtin.uri:
+            url: https://api.digitalocean.com/v2/projects?per_page=200
+            headers: "{{ do_headers }}"
+          register: projects
+
+        - name: Find project {{ do_project }}
+          ansible.builtin.set_fact:
+            project: "{{ projects.json.projects | selectattr('name', 'eq', do_project) | first | default({}) }}"
+
+        - name: Check the project exists
+          ansible.builtin.assert:
+            that: project.id is defined
+            fail_msg: >-
+              No project named "{{ do_project }}". Projects on this account:
+              {{ projects.json.projects | map(attribute='name') | join(', ') }}
+            quiet: true
+
+        - name: List what's in it
+          ansible.builtin.uri:
+            url: https://api.digitalocean.com/v2/projects/{{ project.id }}/resources?per_page=200
+            headers: "{{ do_headers }}"
+          register: project_resources
+
+        - name: Move the droplets in
+          vars:
+            urns: "{{ tagged.json.droplets | map(attribute='id') | map('regex_replace', '^', 'do:droplet:') | list }}"
+            missing: "{{ urns | difference(project_resources.json.resources | map(attribute='urn')) }}"
+          ansible.builtin.uri:
+            url: https://api.digitalocean.com/v2/projects/{{ project.id }}/resources
+            method: POST
+            headers: "{{ do_headers }}"
+            body_format: json
+            body: { resources: "{{ missing }}" }
+          when: missing | length > 0
+          changed_when: true
+
+    # Also covers droplets created before do_extra_tags was set.
+    - name: Add the extra tags
+      when: do_extra_tags | length > 0
+      block:
+        - name: List tags
+          ansible.builtin.uri:
+            url: https://api.digitalocean.com/v2/tags?per_page=200
+            headers: "{{ do_headers }}"
+          register: account_tags
+
+        - name: Create missing tags
+          ansible.builtin.uri:
+            url: https://api.digitalocean.com/v2/tags
+            method: POST
+            headers: "{{ do_headers }}"
+            body_format: json
+            body: { name: "{{ item }}" }
+            status_code: 201
+          loop: "{{ do_extra_tags | difference(account_tags.json.tags | map(attribute='name')) }}"
+
+        - name: Tag the droplets
+          ansible.builtin.uri:
+            url: https://api.digitalocean.com/v2/tags/{{ item.1 }}/resources
+            method: POST
+            headers: "{{ do_headers }}"
+            body_format: json
+            body: { resources: [{ resource_id: "{{ item.0.id | string }}", resource_type: droplet }] }
+            status_code: 204
+          loop: "{{ tagged.json.droplets | product(do_extra_tags) | list }}"
+          loop_control:
+            label: "{{ item.0.name }}: {{ item.1 }}"
+          when: item.1 not in item.0.tags
+          changed_when: true
+
+    - name: Cloud firewall
+      when: do_firewall | bool
+      block:
+        # Applied to the tag, so it covers every droplet carrying it. PUT replaces
+        # the rules wholesale, so changes to ssh_sources take effect on re-run.
+        - name: Cloud firewall rules
+          ansible.builtin.set_fact:
+            firewall:
+              name: "{{ do_tag }}"
+              tags: ["{{ do_tag }}"]
+              inbound_rules:
+                - { protocol: tcp, ports: "22", sources: { addresses: "{{ ssh_sources }}" } }
+                - { protocol: tcp, ports: "80", sources: { addresses: [0.0.0.0/0, "::/0"] } }
+                - { protocol: tcp, ports: "443", sources: { addresses: [0.0.0.0/0, "::/0"] } }
+                # HTTP/3
+                - { protocol: udp, ports: "443", sources: { addresses: [0.0.0.0/0, "::/0"] } }
+              outbound_rules:
+                - { protocol: tcp, ports: "0", destinations: { addresses: [0.0.0.0/0, "::/0"] } }
+                - { protocol: udp, ports: "0", destinations: { addresses: [0.0.0.0/0, "::/0"] } }
+                - { protocol: icmp, destinations: { addresses: [0.0.0.0/0, "::/0"] } }
+
+        - name: List firewalls
+          ansible.builtin.uri:
+            url: https://api.digitalocean.com/v2/firewalls?per_page=200
+            headers: "{{ do_headers }}"
+          register: firewalls
+
+        - name: Create or update the firewall
+          vars:
+            existing: "{{ firewalls.json.firewalls | selectattr('name', 'eq', do_tag) | list }}"
+          ansible.builtin.uri:
+            url: https://api.digitalocean.com/v2/firewalls{{ ('/' ~ existing[0].id) if existing else '' }}
+            method: "{{ 'PUT' if existing else 'POST' }}"
+            headers: "{{ do_headers }}"
+            body_format: json
+            body: "{{ firewall }}"
+            status_code: [200, 202]
+          changed_when: not existing
+
+    - name: Look up the DNS record
+      ansible.builtin.uri:
+        url: https://api.digitalocean.com/v2/domains/{{ dns_zone }}/records?type=A&name={{ app_domain }}
+        headers: "{{ do_headers }}"
+        status_code: [200, 404]
+      register: records
+
+    - name: Check the domain is on DigitalOcean
+      ansible.builtin.assert:
+        that: records.status == 200
+        fail_msg: >-
+          {{ dns_zone }} isn't a domain on this DigitalOcean account. Add it under
+          Networking → Domains and point your registrar at ns1/ns2/ns3.digitalocean.com.
+        quiet: true
+
+    - name: Point the DNS record at the droplet
+      vars:
+        ip: "{{ hostvars[groups['app'][0]].ansible_host }}"
+        existing: "{{ records.json.domain_records }}"
+        # "@" for the zone itself, otherwise the part before the zone.
+        record_name: "{{ '@' if app_domain == dns_zone else app_domain | regex_replace('\\.' ~ (dns_zone | regex_escape) ~ '$', '') }}"
+      ansible.builtin.uri:
+        url: https://api.digitalocean.com/v2/domains/{{ dns_zone }}/records{{ ('/' ~ existing[0].id) if existing else '' }}
+        method: "{{ 'PUT' if existing else 'POST' }}"
+        headers: "{{ do_headers }}"
+        body_format: json
+        body: { type: A, name: "{{ record_name }}", data: "{{ ip }}", ttl: 300 }
+        status_code: [200, 201]
+      when: not existing or existing[0].data != ip
+      changed_when: true
+
+- name: Prepare the droplet
+  hosts: app
+  gather_facts: false
+  vars_files: [defaults.yml, vars.yml]
+  tasks:
+    - name: Wait for SSH
+      ansible.builtin.wait_for_connection:
+        timeout: 300
+
+    # First boot runs cloud-init, which holds the apt lock for a while.
+    - name: Wait for cloud-init to finish
+      ansible.builtin.command: cloud-init status --wait
+      register: cloud_init
+      changed_when: false
+      failed_when: cloud_init.rc not in [0, 2]
+
+    - name: Let in the other SSH keys
+      ansible.builtin.lineinfile:
+        path: /root/.ssh/authorized_keys
+        # Type and key only; the trailing comment may differ.
+        regexp: "^{{ (lookup('ansible.builtin.file', item | expanduser).split()[:2]) | join(' ') | regex_escape }}( |$)"
+        line: "{{ lookup('ansible.builtin.file', item | expanduser) | trim }}"
+        create: true
+        mode: "0600"
+      loop: "{{ ssh_authorized_keys }}"
+
+    - name: Install updates
+      ansible.builtin.apt:
+        update_cache: true
+        upgrade: dist
+
+    - name: Install packages
+      ansible.builtin.apt:
+        name: [unattended-upgrades, python3-debian, sqlite3]
+
+    - name: Check whether a reboot is needed
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: reboot_required
+
+    - name: Reboot
+      ansible.builtin.reboot:
+      when: reboot_required.stat.exists
+
+    # https://caddyserver.com/docs/install#debian-ubuntu-raspbian
+    - name: Add the Caddy apt repository
+      ansible.builtin.deb822_repository:
+        name: caddy-stable
+        uris: https://dl.cloudsmith.io/public/caddy/stable/deb/debian
+        suites: any-version
+        components: main
+        signed_by: https://dl.cloudsmith.io/public/caddy/stable/gpg.key
+
+    - name: Install Caddy
+      ansible.builtin.apt:
+        name: caddy
+        update_cache: true
+
+    - name: Create the service user
+      ansible.builtin.user:
+        name: "{{ app_user }}"
+        system: true
+        home: "{{ app_data_dir }}"
+        create_home: false
+        shell: /usr/sbin/nologin
+
+    - name: Create the data and backup folders
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: "0750"
+      loop: ["{{ app_data_dir }}", "{{ app_backup_dir }}"]
+
+- name: Deploy the app
+  ansible.builtin.import_playbook: deploy.yml

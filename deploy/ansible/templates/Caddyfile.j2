@@ -1,0 +1,6 @@
+# /etc/caddy/sites/user-management.caddy, managed by User Management's
+# deploy/ansible; edits here are overwritten on the next deploy.
+{{ app_domain }} {
+	encode gzip
+	reverse_proxy 127.0.0.1:8100
+}

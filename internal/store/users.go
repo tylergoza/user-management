@@ -128,6 +128,21 @@ func (s *Store) CreateUser(u *User, password string) (int64, error) {
 	return res.LastInsertId()
 }
 
+// ImportUser adds a person with a bcrypt hash taken from another app, as
+// is, so their current password keeps working. Username, DisplayName,
+// Email and IsAdmin are taken from u.
+func (s *Store) ImportUser(u *User, passwordHash string) (int64, error) {
+	if _, err := bcrypt.Cost([]byte(passwordHash)); err != nil {
+		return 0, errors.New("not a bcrypt hash")
+	}
+	res, err := s.DB.Exec(`INSERT INTO users (username, display_name, email, password_hash, is_admin) VALUES (?, ?, ?, ?, ?)`,
+		strings.TrimSpace(u.Username), strings.TrimSpace(u.DisplayName), strings.TrimSpace(u.Email), passwordHash, u.IsAdmin)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
 // UpdateUser saves username, display name, email and admin.
 func (s *Store) UpdateUser(u *User) error {
 	_, err := s.DB.Exec(`UPDATE users SET username = ?, display_name = ?, email = ?, is_admin = ? WHERE id = ?`,

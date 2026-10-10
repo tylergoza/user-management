@@ -1,0 +1,256 @@
+# Copies the people from the maintenance tracker and production planner into
+# User Management and registers both apps (PLAN.md: Moving the existing user
+# over). Run after deploy.yml. Only shows what it would do unless dry_run is
+# false:
+#
+#   export DIGITALOCEAN_TOKEN=...
+#   ansible-playbook import-users.yml                    # dry run
+#   ansible-playbook import-users.yml -e dry_run=false   # for real
+#   ansible-playbook import-users.yml -e prefer=tracker  # whose password wins when they differ
+#
+# The apps' databases are copied with their own `backup` commands into a
+# temporary folder that only User Management's service user can read, and
+# the copies are always removed afterwards. A real run backs up User
+# Management's database first, and starts the app if the first deploy left
+# it stopped.
+#
+# A real run prints each newly registered app's SSO_CLIENT_SECRET once, on
+# this terminal only. Save them as UM_TRACKER_SECRET / UM_PLANNER_SECRET for
+# the apps' deploys.
+
+- name: Find the droplet
+  hosts: localhost
+  gather_facts: false
+  vars_files: [defaults.yml, vars.yml]
+  tasks:
+    - name: Find the droplets
+      ansible.builtin.include_tasks: tasks/find_droplets.yml
+
+    - name: Check there's somewhere to import on
+      ansible.builtin.assert:
+        that: groups['app'] | default([]) | length > 0
+        fail_msg: No droplets are tagged {{ do_tag }}. Run provision.yml first.
+        quiet: true
+
+    - name: Check the options
+      ansible.builtin.assert:
+        that: prefer in ['', 'tracker', 'planner']
+        fail_msg: prefer must be tracker or planner (or left out), not "{{ prefer }}".
+        quiet: true
+
+    # The output holds the new client secrets; Ansible's own log would keep
+    # a copy of everything shown on screen.
+    - name: Check Ansible isn't writing a log file
+      ansible.builtin.assert:
+        that: not lookup('ansible.builtin.config', 'DEFAULT_LOG_PATH')
+        fail_msg: >-
+          Ansible is logging to {{ lookup('ansible.builtin.config', 'DEFAULT_LOG_PATH') }}
+          (ANSIBLE_LOG_PATH or log_path), which would keep the client secrets in a file.
+          Unset it for this run.
+        quiet: true
+      when: not dry_run | bool
+
+- name: Import
+  hosts: app
+  gather_facts: false
+  vars_files: [defaults.yml, vars.yml]
+  vars:
+    real: "{{ not dry_run | bool }}"
+    um: [runuser, -u, "{{ app_user }}", --, "{{ app_bin }}", -db, "{{ app_db }}"]
+    sources:
+      - { key: tracker, user: "{{ tracker_user }}", bin: "{{ tracker_bin }}", db: "{{ tracker_db }}", url: "{{ tracker_url }}" }
+      - { key: planner, user: "{{ planner_user }}", bin: "{{ planner_bin }}", db: "{{ planner_db }}", url: "{{ planner_url }}" }
+  tasks:
+    - name: Look for User Management
+      ansible.builtin.stat:
+        path: "{{ app_bin }}"
+      register: um_bin
+
+    - name: Check User Management is installed
+      ansible.builtin.assert:
+        that: um_bin.stat.exists
+        fail_msg: User Management isn't installed on {{ inventory_hostname }}. Run deploy.yml first.
+        quiet: true
+
+    - name: Look for each app's binary
+      ansible.builtin.stat:
+        path: "{{ item.bin }}"
+      loop: "{{ sources }}"
+      loop_control:
+        label: "{{ item.key }}"
+      register: src_bins
+
+    - name: Look for each app's database
+      ansible.builtin.stat:
+        path: "{{ item.db }}"
+      loop: "{{ sources }}"
+      loop_control:
+        label: "{{ item.key }}"
+      register: src_dbs
+
+    - name: Pick the apps to import from
+      ansible.builtin.set_fact:
+        present: "{{ sources | zip(src_bins.results, src_dbs.results)
+          | selectattr('1.stat.exists') | selectattr('2.stat.exists')
+          | map(attribute='0') | list }}"
+        stamp: "{{ now(utc=true, fmt='%Y%m%dT%H%M%SZ') }}"
+
+    - name: Note the apps that aren't installed
+      ansible.builtin.debug:
+        msg: "Skipping the {{ item.key }}: {{ item.db }} isn't on {{ inventory_hostname }}."
+      loop: "{{ sources | rejectattr('key', 'in', present | map(attribute='key') | list) }}"
+      loop_control:
+        label: "{{ item.key }}"
+
+    - name: Check there's something to import
+      ansible.builtin.assert:
+        that: present | length > 0
+        fail_msg: Neither the tracker nor the planner is installed on {{ inventory_hostname }}.
+        quiet: true
+
+    - name: Check for User Management's database
+      ansible.builtin.stat:
+        path: "{{ app_db }}"
+      register: um_db
+      when: real
+
+    - name: Back up User Management's database
+      ansible.builtin.command:
+        argv: "{{ um + ['backup', app_backup_dir ~ '/pre-import-' ~ stamp ~ '.db'] }}"
+      when: real and um_db.stat.exists
+      changed_when: true
+
+    - name: Import from copies
+      block:
+        - name: Make a temporary folder
+          ansible.builtin.tempfile:
+            state: directory
+            prefix: um-import-
+          register: tmp
+
+        # Each app's user writes its copy into its own subfolder, which then
+        # goes to User Management's user (it also needs to write there: a
+        # WAL copy gets -wal/-shm files beside it). Nobody else can look in.
+        - name: Let the service users reach it
+          ansible.builtin.file:
+            path: "{{ tmp.path }}"
+            state: directory
+            owner: "{{ app_user }}"
+            group: "{{ app_user }}"
+            mode: "0711"
+
+        - name: Make a folder for each copy
+          ansible.builtin.file:
+            path: "{{ tmp.path }}/{{ item.key }}"
+            state: directory
+            owner: "{{ item.user }}"
+            group: "{{ item.user }}"
+            mode: "0700"
+          loop: "{{ present }}"
+          loop_control:
+            label: "{{ item.key }}"
+
+        - name: Copy each app's database with its backup command
+          ansible.builtin.command:
+            argv: [runuser, -u, "{{ item.user }}", --, "{{ item.bin }}", -db, "{{ item.db }}", backup, "{{ tmp.path }}/{{ item.key }}/{{ item.key }}.db"]
+          loop: "{{ present }}"
+          loop_control:
+            label: "{{ item.key }}"
+          changed_when: true
+
+        - name: Hand the copies to User Management's user
+          ansible.builtin.file:
+            path: "{{ tmp.path }}/{{ item.key }}"
+            state: directory
+            owner: "{{ app_user }}"
+            group: "{{ app_user }}"
+            recurse: true
+          loop: "{{ present }}"
+          loop_control:
+            label: "{{ item.key }}"
+
+        - name: Build the command line
+          ansible.builtin.set_fact:
+            import_args: >-
+              {{ import_args | default(['import-users'])
+                 + ['--' ~ item.key, tmp.path ~ '/' ~ item.key ~ '/' ~ item.key ~ '.db']
+                 + (['--' ~ item.key ~ '-url', item.url] if item.url else []) }}
+          loop: "{{ present }}"
+          loop_control:
+            label: "{{ item.key }}"
+
+        # no_log: the result holds the client secrets, and Ansible would print
+        # all of it on a failure. The next task shows the output on screen.
+        - name: Run import-users{{ '' if real else ' --dry-run' }}
+          ansible.builtin.command:
+            argv: "{{ um + import_args + (['--prefer', prefer] if prefer else []) + ([] if real else ['--dry-run']) }}"
+          register: imported
+          no_log: true
+          changed_when: real
+          failed_when: false
+
+        - name: Output
+          ansible.builtin.debug:
+            msg: "{{ imported.stdout_lines + imported.stderr_lines }}"
+
+        - name: Check it worked
+          ansible.builtin.assert:
+            that: imported.rc == 0
+            fail_msg: import-users failed (output above). Nothing more was done.
+            quiet: true
+
+      always:
+        - name: Remove the copies
+          ansible.builtin.file:
+            path: "{{ tmp.path }}"
+            state: absent
+          when: tmp.path is defined
+
+    - name: Count the users
+      ansible.builtin.command:
+        argv: [runuser, -u, "{{ app_user }}", --, sqlite3, -readonly, "{{ app_db }}", SELECT count(*) FROM users]
+      register: user_count
+      when: real
+      changed_when: false
+
+    - name: Check someone can sign in
+      ansible.builtin.assert:
+        that: user_count.stdout | trim != '0'
+        fail_msg: >-
+          No users were imported, so the app stays stopped (starting it would
+          leave /setup open). Check the output above, or set admin_username and
+          run deploy.yml to start without an import.
+        quiet: true
+      when: real
+
+    # The first deploy leaves the app stopped while there are no users.
+    - name: Start the app
+      ansible.builtin.systemd_service:
+        name: user-management
+        enabled: true
+        state: started
+      when: real
+
+    - name: Wait for the app to answer
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8100/healthz
+      register: health
+      until: health.status == 200
+      retries: 15
+      delay: 2
+      when: real
+
+    - name: Done
+      vars:
+        secrets: "{{ imported.stdout is search('SSO_CLIENT_SECRET=') }}"
+        how_to_save: >-
+          Save each SSO_CLIENT_SECRET above now: it isn't shown again. Keep the
+          planner's as UM_PLANNER_SECRET and the tracker's as UM_TRACKER_SECRET in
+          the environment for the apps' deploys (their SSO_CLIENT_ID is planner and
+          tracker). Then sign in at https://{{ app_domain }} with your existing
+          username and password.
+        unchanged: >-
+          Both apps were already registered, so their secrets are unchanged
+          (make a new one under Apps at https://{{ app_domain }} if one was lost).
+      ansible.builtin.debug:
+        msg: "{{ ('Imported. ' ~ (how_to_save if secrets else unchanged)) if real else 'Dry run: nothing changed. Run again with -e dry_run=false to do it.' }}"
