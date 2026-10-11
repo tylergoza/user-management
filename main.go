@@ -6,6 +6,7 @@
 //	user-management reset-password NAME   set a new password for a user
 //	user-management backup FILE           write a consistent copy of the database
 //	user-management import-users ...      copy people in from the tracker and planner
+//	user-management register-app ...      register an app (e.g. the event planner)
 //
 // Flags such as -db go before the command. Configuration comes from flags
 // or environment variables (see README.md).
@@ -30,6 +31,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/tylergoza/user-management/internal/importer"
+	"github.com/tylergoza/user-management/internal/registerapp"
 	"github.com/tylergoza/user-management/internal/server"
 	"github.com/tylergoza/user-management/internal/store"
 )
@@ -130,9 +132,10 @@ var commandUsage = map[string]string{
 	"reset-password": "reset-password USERNAME",
 	"backup":         "backup DEST_FILE",
 	"import-users":   "import-users --tracker FILE --planner FILE [--tracker-url URL] [--planner-url URL] [--prefer tracker|planner] [--dry-run]",
+	"register-app":   "register-app CLIENT_ID --name NAME --url URL [--roles user,admin] [--rename-role old=new] [--copy-access-from CLIENT_ID] [--rotate-secret] [--dry-run]",
 }
 
-const commandList = "create-user, reset-password, backup, import-users"
+const commandList = "create-user, reset-password, backup, import-users, register-app"
 
 // checkCommand validates a command line before anything touches the
 // database. Flags belong before the command; after it they'd be ignored.
@@ -147,6 +150,10 @@ func checkCommand(args []string) error {
 	if args[0] == "import-users" {
 		// This one has its own flags, after the command.
 		_, err := importer.ParseArgs(args[1:], os.Stderr)
+		return err
+	}
+	if args[0] == "register-app" {
+		_, err := registerapp.ParseArgs(args[1:], os.Stderr)
 		return err
 	}
 	rest := args[1:]
@@ -211,6 +218,12 @@ func runCommand(st *store.Store, args []string) error {
 			return err
 		}
 		return importer.Run(st, opts, os.Stdout)
+	case "register-app":
+		opts, err := registerapp.ParseArgs(args[1:], os.Stderr)
+		if err != nil {
+			return err
+		}
+		return registerapp.Run(st, opts, os.Stdout)
 	default:
 		return fmt.Errorf("unknown command %q (commands: %s)", args[0], commandList)
 	}

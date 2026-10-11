@@ -40,3 +40,11 @@ droplet_name: maintenance-tracker
 tracker_url: https://maintenance.example.org
 planner_url: https://productions.example.org
 # prefer: tracker
+
+# For register-app.yml: the event planner's public address. (Its access list
+# starts from the planner's, per sso_apps in defaults.yml; override with
+# copy_access_from, "" copies nobody.)
+events_url: https://events.example.org
+# copy_access_from: planner
+# rotate_secret: false          # true: new secret for an already-registered app
+# keychain_service: um-events   # overrides the app's Keychain item (sso_apps); "" prints the secret

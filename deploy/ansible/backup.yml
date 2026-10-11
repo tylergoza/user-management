@@ -1,5 +1,5 @@
 # Backs up every app's database on the shared droplet (User Management, the
-# production planner and the maintenance tracker, whichever are installed)
+# production planner, the maintenance tracker and the event planner, whichever are installed)
 # with each app's own `backup` command, then copies them to this machine.
 #
 #   export DIGITALOCEAN_TOKEN=...
@@ -40,6 +40,7 @@
       - { name: user-management, user: "{{ app_user }}", bin: "{{ app_bin }}", db: "{{ app_db }}", dir: "{{ app_backup_dir }}" }
       - { name: production-planner, user: "{{ planner_user }}", bin: "{{ planner_bin }}", db: "{{ planner_db }}", dir: "{{ planner_backup_dir }}" }
       - { name: maintenance-tracker, user: "{{ tracker_user }}", bin: "{{ tracker_bin }}", db: "{{ tracker_db }}", dir: "{{ tracker_backup_dir }}" }
+      - { name: event-planner, user: "{{ events_user }}", bin: "{{ events_bin }}", db: "{{ events_db }}", dir: "{{ events_backup_dir }}" }
   tasks:
     - name: Look for each app's binary
       ansible.builtin.stat:

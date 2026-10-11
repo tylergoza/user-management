@@ -90,16 +90,66 @@ planner_user: planner
 planner_bin: /usr/local/bin/production-planner
 planner_db: /var/lib/production-planner/productions.db
 planner_backup_dir: /var/lib/production-planner/backups
+events_user: events
+events_bin: /usr/local/bin/event-planner
+events_db: /var/lib/event-planner/events.db
+events_backup_dir: /var/lib/event-planner/backups
 
 # import-users.yml: the apps' public https addresses. They're registered here
 # with redirect URI <url>/auth/callback. Only needed while an app isn't
 # registered yet.
 tracker_url: ""
 planner_url: ""
+# register-app.yml: the event planner's public https address (registered as
+# client "events", redirect URI <events_url>/auth/callback).
+events_url: ""
+# register-app.yml: the apps it can register or rotate (-e app=<key>, or
+# make register-app APP=<key>). The key is the client ID. name must match
+# what import-users registered, or a re-run looks like a rename. keychain is
+# the login Keychain service the secret is saved to, env the variable `with-um`
+# exports from it, deploy_repo the sibling repo to redeploy afterwards, and
+# copy_access_from the app whose people get the same access (optional;
+# -e copy_access_from= copies nobody, -e copy_access_from=<key> overrides).
+# roles       the app's roles, comma separated (optional; passed as --roles, so
+#             an app that's already registered gets this list; unset leaves
+#             its roles alone)
+# rename_roles  list like ["user=helper"] (optional; --rename-role: everyone
+#             with the old role gets the new one)
+# Adding an app = one entry here + one line in your `with-um` in ~/.zshrc.
+sso_apps:
+  events:
+    name: Event Planner
+    url: "{{ events_url }}"
+    keychain: um-events
+    env: UM_EVENTS_SECRET
+    deploy_repo: event_planning
+    copy_access_from: planner
+    roles: helper,planner,admin
+    rename_roles: ["user=helper"]
+  planner:
+    name: Production Planner
+    url: "{{ planner_url }}"
+    keychain: um-planner
+    env: UM_PLANNER_SECRET
+    deploy_repo: production_planning
+  tracker:
+    name: Maintenance Tracker
+    url: "{{ tracker_url }}"
+    keychain: um-tracker
+    env: UM_TRACKER_SECRET
+    deploy_repo: maintenance_tracking
+# register-app.yml: true makes a new secret for an app that's already
+# registered (the old one stops working at once; redeploy the app with the
+# new one). A new app gets a secret either way.
+rotate_secret: false
+# register-app.yml: when it makes a secret and this machine is a Mac, it is
+# saved to the login Keychain under the app's sso_apps keychain name instead
+# of printing it. Not set here on purpose: -e keychain_service=<name>
+# overrides the name, -e keychain_service= prints the secret instead.
 # Whose password wins when someone's differ between the apps: "" (the one
 # used most recently), tracker or planner.
 prefer: ""
-# import-users.yml only shows what it would do unless run with -e dry_run=false.
+# import-users.yml and register-app.yml only show what it would do unless run with -e dry_run=false.
 dry_run: true
 
 do_headers:

@@ -8,6 +8,8 @@ admin adds people and sets what they can do in each app from here.
 Status: steps 1 to 7 are done: User Management is live at
 accounts.mountainviewbaptist.cloud and both apps sign in through it
 (rolled out 2026-10-10). Step 8, cleanup, is due after a few weeks.
+A third app, the event planner (`../event_planning`, client `events`, port 8110),
+signs in the same way; `register-app` registers it (see the README); `make register-app` saves its secret to the Mac Keychain as `um-events` for `with-um`, and `ROTATE=true` makes a new one.
 
 ## What the apps do today
 
@@ -296,7 +298,7 @@ The same work is needed in both repos, so it should land in both at once
 
   Copy the shared pieces from the planner, don't reinvent them.
 - Cookies are named `um_*`. It listens on **8100** locally (tracker is on
-  8080, planner on 8090).
+  8080, planner on 8090, event planner on 8110).
 
 ## Moving the existing user over
 
@@ -439,7 +441,8 @@ Notes from step 2, for the apps (steps 4 and 5):
 ## Decisions (2026-10-06)
 
 - **Domain:** `accounts.<church domain>`.
-- **Roles per app:** just `user` / `admin` for now, matching today. A
+- **Roles per app:** just `user` / `admin` for now, matching today. The
+  event planner (`events`) uses `helper` / `planner` / `admin`. A
   read-only or `reporter` role can be added to an app's `roles` later.
 - **Session lengths:** 30 days, sliding, here. The apps keep theirs as they
   are today.
