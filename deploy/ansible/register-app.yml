@@ -1,0 +1,204 @@
+# Registers an app with User Management (client ID = its key in sso_apps in
+# defaults.yml, given with -e app=; required) and gives the
+# people who use another app (per its sso_apps entry) the same access to it.
+# Run after deploy.yml. Only shows what it would do unless dry_run is false:
+#
+#   export DIGITALOCEAN_TOKEN=...
+#   ansible-playbook register-app.yml -e app=events                    # dry run, the event planner
+#   ansible-playbook register-app.yml -e app=events -e dry_run=false   # for real
+#   ansible-playbook register-app.yml -e app=planner -e dry_run=false -e rotate_secret=true
+#   ansible-playbook register-app.yml -e app=events -e copy_access_from=   # copy nobody
+#   ansible-playbook register-app.yml -e app=events -e dry_run=false -e keychain_service=    # print it instead
+# An sso_apps entry with roles / rename_roles also sets the app's roles and
+# moves people between roles (events: helper, planner, admin; user -> helper),
+# even if the app is already registered. Apps without them keep their roles.
+# Needs the app's address in vars.yml (events_url, planner_url or
+# tracker_url). Safe to run again: an app that's already registered keeps its
+# secret, and only people without a row for it are given access.
+#
+# rotate_secret=true makes a new secret for an app that's already registered
+# (lost or leaked). The old one stops working at once, so the app can't sign
+# anyone in until it's redeployed with the new one.
+#
+# A real run backs up User Management's database first. When it makes a
+# secret (new app, or rotate_secret) and this machine is a Mac, the secret
+# goes into the login Keychain as keychain_service (default: the app's
+# sso_apps keychain, e.g. um-events; "" to skip), fed to `security -i` on stdin so it's never in a command line,
+# and isn't shown. Otherwise, or if saving fails, it's printed once on this
+# terminal: save it as the app's env variable (e.g. UM_EVENTS_SECRET) for its deploy.
+
+- name: Find the droplet
+  hosts: localhost
+  gather_facts: false
+  vars_files: [defaults.yml, vars.yml]
+  tasks:
+    - name: Check an app was given
+      ansible.builtin.assert:
+        that: app | default('') in sso_apps
+        fail_msg: >-
+          {{ 'Unknown app "' ~ app ~ '". ' if app | default('') else 'Say which app with -e app=<name> (make register-app APP=<name>). ' }}Use one of: {{ sso_apps.keys() | sort | join(', ') }}.
+        quiet: true
+
+    - name: Find the droplets
+      ansible.builtin.include_tasks: tasks/find_droplets.yml
+
+    - name: Check there's somewhere to register on
+      ansible.builtin.assert:
+        that: groups['app'] | default([]) | length > 0
+        fail_msg: No droplets are tagged {{ do_tag }}. Run provision.yml first.
+        quiet: true
+
+    - name: Check the options
+      ansible.builtin.assert:
+        that:
+          - app in sso_apps
+          - sso_apps[app].url is match('^https?://[^/\s]+$')
+        fail_msg: >-
+          {{ ('Set ' ~ app ~ '_url in vars.yml to ' ~ sso_apps[app].name ~ '\'s address without a trailing path, e.g. https://'
+              ~ app ~ '.example.org (now "' ~ sso_apps[app].url ~ '").')
+             if app in sso_apps else
+             'Unknown app "' ~ app ~ '". Use one of: ' ~ (sso_apps.keys() | sort | join(', ')) ~ '.' }}
+        quiet: true
+
+    # The output holds the new client secret; Ansible's own log would keep a
+    # copy of everything shown on screen.
+    - name: Check Ansible isn't writing a log file
+      ansible.builtin.assert:
+        that: not lookup('ansible.builtin.config', 'DEFAULT_LOG_PATH')
+        fail_msg: >-
+          Ansible is logging to {{ lookup('ansible.builtin.config', 'DEFAULT_LOG_PATH') }}
+          (ANSIBLE_LOG_PATH or log_path), which would keep the client secret in a file.
+          Unset it for this run.
+        quiet: true
+      when: not dry_run | bool
+
+- name: Register
+  hosts: app
+  gather_facts: false
+  vars_files: [defaults.yml, vars.yml]
+  vars:
+    real: "{{ not dry_run | bool }}"
+    entry: "{{ sso_apps[app] }}"
+    app_label: "{{ entry.name }}"
+    # -e keychain_service= (empty) is respected; unset means the app's own.
+    kc_service: "{{ keychain_service | default(entry.keychain) }}"
+    copy_from: "{{ copy_access_from | default(entry.copy_access_from | default('')) }}"
+    # The secret is um_ plus base64url characters; it's only used when it
+    # matches, which keeps it safe to quote in the security command.
+    new_secret: "{{ registered.stdout | default('') | regex_findall('(?m)^SSO_CLIENT_SECRET=(um_[A-Za-z0-9_-]+)$') | first | default('') }}"
+    local_user: "{{ lookup('ansible.builtin.env', 'USER') }}"
+    can_save: >-
+      {{ real and new_secret != '' and kc_service != ''
+         and kc_service is match('^[A-Za-z0-9._-]+$')
+         and local_user is match('^[A-Za-z0-9._-]+$') }}
+    um: [runuser, -u, "{{ app_user }}", --, "{{ app_bin }}", -db, "{{ app_db }}"]
+    register_args: >-
+      {{ ['register-app', app, '--name', entry.name, '--url', entry.url]
+         + (['--roles', entry.roles] if entry.roles | default('') else [])
+         + (entry.rename_roles | default([]) | map('regex_replace', '^', '--rename-role=') | list)
+         + (['--copy-access-from', copy_from] if copy_from else [])
+         + (['--rotate-secret'] if rotate_secret | bool else [])
+         + ([] if real else ['--dry-run']) }}
+  tasks:
+    - name: Look for User Management
+      ansible.builtin.stat:
+        path: "{{ app_bin }}"
+      register: um_bin
+
+    - name: Check User Management is installed
+      ansible.builtin.assert:
+        that: um_bin.stat.exists
+        fail_msg: User Management isn't installed on {{ inventory_hostname }}. Run deploy.yml first.
+        quiet: true
+
+    - name: Back up User Management's database
+      ansible.builtin.command:
+        argv: "{{ um + ['backup', app_backup_dir ~ '/pre-register-' ~ now(utc=true, fmt='%Y%m%dT%H%M%SZ') ~ '.db'] }}"
+      when: real
+      changed_when: true
+
+    # no_log: the result holds the client secret, and Ansible would print all
+    # of it on a failure. The next task shows the output on screen.
+    - name: Run register-app{{ '' if real else ' --dry-run' }}
+      ansible.builtin.command:
+        argv: "{{ um + register_args }}"
+      register: registered
+      no_log: true
+      changed_when: real
+      failed_when: false
+
+    - name: Check this is a Mac
+      ansible.builtin.command: uname -s
+      delegate_to: localhost
+      register: control_os
+      changed_when: false
+      failed_when: false
+      when: can_save | bool
+
+    # The secret goes in on stdin, never as an argument. no_log keeps it out
+    # of failure output. -U updates an existing item.
+    - name: Save the client secret to the Keychain
+      ansible.builtin.command:
+        argv: [security, -i]
+        stdin: >-
+          add-generic-password -U -a "{{ local_user }}" -s "{{ kc_service }}"
+          -l "User Management: {{ app_label }} client secret" -w "{{ new_secret }}"
+      delegate_to: localhost
+      register: keychain
+      no_log: true
+      changed_when: true
+      failed_when: false
+      when: can_save | bool and control_os.stdout == 'Darwin' and registered.rc == 0
+
+    - name: Check the Keychain has it
+      ansible.builtin.command:
+        argv: [security, find-generic-password, -a, "{{ local_user }}", -s, "{{ kc_service }}", -w]
+      delegate_to: localhost
+      register: keychain_check
+      no_log: true
+      changed_when: false
+      failed_when: false
+      when: keychain is not skip
+
+    - name: Work out whether it was saved
+      ansible.builtin.set_fact:
+        saved: "{{ keychain_check is not skip and keychain_check.rc | default(1) == 0 and (keychain_check.stdout | trim) == new_secret }}"
+      no_log: true
+
+    - name: Output
+      ansible.builtin.debug:
+        msg: >-
+          {{ (registered.stdout_lines + registered.stderr_lines)
+             | reject('search', '^SSO_CLIENT_SECRET=') | reject('search', '^Save the secret now') | list
+             if saved | bool else registered.stdout_lines + registered.stderr_lines }}
+
+    - name: Stop if register-app failed
+      ansible.builtin.assert:
+        that: registered.rc == 0
+        fail_msg: register-app failed (output above). Nothing more was done.
+        quiet: true
+
+    - name: Say where the secret went
+      ansible.builtin.debug:
+        msg: >-
+          Saved the {{ app_label }} client secret to your Keychain as {{ kc_service }}.
+          Deploy the {{ app_label }} with: with-do with-um make deploy (in ../{{ entry.deploy_repo }})
+      when: saved | bool
+
+    - name: Say the Keychain wasn't used
+      ansible.builtin.debug:
+        msg: >-
+          {{ 'The client secret was NOT saved to the Keychain (' ~
+             ('keychain_service is empty' if kc_service == '' else
+              'this machine is not a Mac' if control_os is not skip and control_os.stdout != 'Darwin' else
+              'the Keychain save failed') ~ '). Save SSO_CLIENT_SECRET above now: it isn\'t shown again.' }}
+      when: real and new_secret != '' and not saved | bool
+
+    - name: Done
+      ansible.builtin.debug:
+        msg: >-
+          {{ ('Keep the secret as ' ~ entry.env ~ ' in the environment for the ' ~ app_label ~ '\'s deploy (its SSO_CLIENT_ID is ' ~ app ~ ').'
+              if new_secret != '' and not saved | bool else
+              'Done.' if saved | bool else
+              'The ' ~ app_label ~ ' was already registered, so its secret is unchanged (re-run with ROTATE=true for a new one).')
+             if real else 'Dry run: nothing changed. Run `make register-app DRY_RUN=false` to do it.' }}

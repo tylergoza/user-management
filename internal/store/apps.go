@@ -3,8 +3,10 @@ package store
 import (
 	"crypto/subtle"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
+	"time"
 )
 
 // ErrBadClient is an unknown client ID or a wrong client secret.
@@ -177,4 +179,79 @@ func (s *Store) ListUserApps(userID int64) ([]UserApp, error) {
 		out = append(out, a)
 	}
 	return out, rows.Err()
+}
+
+// RoleMove is one person whose role in an app was renamed.
+type RoleMove struct {
+	UserID   int64
+	From, To string
+}
+
+// RoleInUseError says a role can't be removed because people still have it.
+type RoleInUseError struct {
+	Role string
+	N    int
+}
+
+func (e *RoleInUseError) Error() string {
+	return fmt.Sprintf("can't remove the %s role: %d person(s) still have it; rename it or change their role first", e.Role, e.N)
+}
+
+// ChangeAppRoles renames roles (each {old, new}, in order: everyone with old
+// gets new), then saves roles as the app's list, all in one transaction.
+// Removing a role someone still has is refused with *RoleInUseError and
+// nothing changes. With dry it does all the checks and then rolls back, still
+// returning who would move.
+func (s *Store) ChangeAppRoles(appID int64, renames [][2]string, roles []string, dry bool) ([]RoleMove, error) {
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	var cur string
+	if err := tx.QueryRow(`SELECT roles FROM apps WHERE id = ?`, appID).Scan(&cur); err != nil {
+		return nil, notFound(err)
+	}
+	var moves []RoleMove
+	for _, r := range renames {
+		rows, err := tx.Query(`SELECT user_id FROM user_apps WHERE app_id = ? AND role = ? ORDER BY user_id`, appID, r[0])
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			moves = append(moves, RoleMove{UserID: id, From: r[0], To: r[1]})
+		}
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		rows.Close()
+		if _, err := tx.Exec(`UPDATE user_apps SET role = ?, updated_at = ? WHERE app_id = ? AND role = ?`,
+			r[1], sqlTime(time.Now()), appID, r[0]); err != nil {
+			return nil, err
+		}
+	}
+	for _, role := range strings.Split(cur, ",") {
+		if role == "" || slices.Contains(roles, role) {
+			continue
+		}
+		var n int
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM user_apps WHERE app_id = ? AND role = ?`, appID, role).Scan(&n); err != nil {
+			return nil, err
+		}
+		if n > 0 {
+			return nil, &RoleInUseError{Role: role, N: n}
+		}
+	}
+	if _, err := tx.Exec(`UPDATE apps SET roles = ? WHERE id = ?`, strings.Join(roles, ","), appID); err != nil {
+		return nil, err
+	}
+	if dry {
+		return moves, nil
+	}
+	return moves, tx.Commit()
 }

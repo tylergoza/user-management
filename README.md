@@ -3,7 +3,8 @@
 One place for the church's user accounts. People get one username and
 password for every church app, and user admins decide who can use which app.
 The [maintenance tracker](../maintenance_tracking) and the
-[production planner](../production_planning) will sign people in through it.
+[production planner](../production_planning) sign people in through it, and so
+does the [event planner](../event_planning).
 See [PLAN.md](PLAN.md) for the design and what's built so far.
 
 Built the same way as the other apps:
@@ -22,7 +23,7 @@ make dev                     # http://127.0.0.1:8100, edits to web/ show on refr
 ```
 
 The first visit goes to `/setup` to create the first user admin. It runs on
-port 8100, so the tracker (8080) and planner (8090) can run alongside it.
+port 8100, so the tracker (8080), planner (8090) and event planner (8110) can run alongside it.
 
 ## Features
 
@@ -60,6 +61,8 @@ user-management import-users \
     --tracker /var/lib/.../maintenance.db --tracker-url https://maintenance.example.org \
     --planner /var/lib/production-planner/productions.db --planner-url https://planner.example.org \
     [--prefer tracker|planner] [--dry-run]
+user-management register-app events --name "Event Planner" --url https://events.example.org \
+    [--roles user,admin] [--rename-role old=new] [--copy-access-from planner] [--rotate-secret] [--dry-run]
 ```
 
 The first user created is always a user admin.
@@ -79,6 +82,32 @@ here (an admin of both apps first, then alphabetically). Running it again is
 safe: people already here are left alone apart from getting access to an app
 they don't have yet, and registered apps keep their secrets.
 `import-users -h` has the details.
+
+`register-app` registers one app from the command line, like the Apps page
+(redirect URI `<url>/auth/callback`, address `<url>`, roles default to
+`user,admin` and must include `admin`). A new app's `SSO_CLIENT_ID` and
+`SSO_CLIENT_SECRET` are printed once. If the client ID is already registered
+nothing about the app changes (unless `--roles` or `--rename-role` is given),
+no secret is printed, and it's safe to re-run.
+`--roles a,b,admin` on an app that's already registered replaces its roles
+list (in that order, audit-logged like an edit on the Apps page). Adding roles
+is always fine; removing a role people still have is refused. Without
+`--roles` an existing app's roles are never touched.
+`--rename-role old=new` (repeatable) moves everyone with role `old` in that
+app to `new` (each change is audit-logged) and swaps `old` for `new` in its
+roles list, in one transaction with `--roles`: the rename happens first, then
+the check. Running it again does nothing. `--dry-run` prints the counts.
+`--rotate-secret` makes a new secret for an app that's already registered
+(the same as "make a new one" on the Apps page, and audit-logged the same way)
+and prints it once; the old secret stops working at once, so the app can't
+sign anyone in until it's redeployed with the new one. For an app that isn't
+registered yet it does nothing extra (a new app gets a secret anyway).
+`--copy-access-from planner` gives everyone with access to that app the same
+role in the new one, only where they have no row yet (a role the new app
+doesn't have becomes `user` if the new app has that role, else its first role
+other than `admin`; suspended access stays suspended; existing rows
+are never touched). Each grant goes in the audit log, and a count is printed.
+`--dry-run` changes nothing. `register-app -h` has the details.
 
 ## Deploying
 
@@ -117,7 +146,7 @@ export DIGITALOCEAN_TOKEN=...
 make provision
 # 2. Later updates
 make deploy
-# 3. Back up all three databases, here and under deploy/ansible/backups/
+# 3. Back up every app's database, here and under deploy/ansible/backups/
 make backup
 # 4. Dry run: shows who'd be created and which password is kept
 make import-users                        # add PREFER=tracker|planner to pick
@@ -129,6 +158,54 @@ export UM_TRACKER_SECRET=...             # the tracker's
 #    and base_url (the app's own address) in its deploy/ansible/vars.yml and
 #    `make deploy` from its repo. Test each from an installed PWA.
 ```
+
+#### Adding the event planner (and rotating any app's secret)
+
+The event planner (`../event_planning`) runs on 127.0.0.1:8110 as user
+`events` (`/usr/local/bin/event-planner`, `/var/lib/event-planner/events.db`),
+and signs in as client `events`. Set `events_url` in `vars.yml`, then:
+
+```sh
+with-do make register-app APP=events                            # dry run, the event planner
+with-do make register-app APP=events DRY_RUN=false              # register it; secret saved as um-events
+with-do make register-app APP=planner DRY_RUN=false ROTATE=true # new planner secret, saved over um-planner
+with-do make register-app APP=tracker DRY_RUN=false ROTATE=true
+# then, at once, in the app's repo (../event_planning, ../production_planning, ../maintenance_tracking):
+with-do with-um make deploy
+# (with sso_url https://accounts.<domain> and base_url, its own address, set.)
+```
+
+The event planner has three roles: `helper`, `planner` and `admin`. Planners
+create events but can't manage users; helpers help on events but can't create
+them; admins do both and manage people. Its `sso_apps` entry sets
+`roles: helper,planner,admin` and `rename_roles: ["user=helper"]`, so the dry
+run above shows the change and `DRY_RUN=false` updates its roles to helper,
+planner, admin and moves everyone who has `user` to `helper` (an app that is
+already registered keeps its secret).
+
+`APP` is a key of `sso_apps` in `deploy/ansible/defaults.yml` (`events`,
+`planner`, `tracker`); each entry holds the app's name, address (`events_url`,
+`planner_url`, `tracker_url` in `vars.yml`), Keychain service, secret variable
+and who it copies access from. A new app is one entry there plus one line in
+your `with-um`. The planner and tracker were registered by `import-users`, so
+without `ROTATE=true` their run changes nothing (they copy access from no one
+by default). Everyone with access to the planner gets the same access to the
+event planner (`copy_access_from: planner` in its entry; override with
+`-e copy_access_from=other`, or `-e copy_access_from=` to copy nobody). Like
+`import-users`, a real run backs up `users.db` first and refuses to run while
+Ansible writes a log file. Running it again is safe.
+
+When a real run makes a secret (a new app, or `ROTATE=true`) on a Mac, it is
+saved to your login Keychain under the app's service (`um-events`,
+`um-planner`, `um-tracker`; `-U` updates the old item) and not shown. It goes
+to `security -i` on stdin, so it is never in a command line, and every task
+that touches it has `no_log`. `with-um` (in your `~/.zshrc`) must export
+`UM_EVENTS_SECRET`, `UM_PLANNER_SECRET` and `UM_TRACKER_SECRET` from those
+services. Use `KEYCHAIN=other-name`, or `KEYCHAIN=` to print the secret
+instead (also what happens on a non-Mac or if the save fails: save it then, it
+isn't shown again). `ROTATE=true` invalidates the old secret at once, so the
+app can't sign anyone in until it's redeployed with the new one: run
+`with-do with-um make deploy` in its repo straight away.
 
 If a third-party apt repo is down (Caddy's has returned 402), provision
 skips the system updates with a warning and carries on; Caddy is only
@@ -142,7 +219,7 @@ real run while Ansible is set to write a log file. Keep them somewhere safe
 (a password manager) and export them before deploying the apps. Running it
 again is safe; apps already registered keep their secrets.
 
-`backup.yml` can be run any time: it skips apps that aren't installed, leaves
+`backup.yml` (all four apps) can be run any time: it skips apps that aren't installed, leaves
 `manual-<time>.db` in each app's backups folder on the droplet, and copies
 them to `deploy/ansible/backups/<time>/` (gitignored; they hold password
 hashes).
@@ -152,7 +229,7 @@ hashes).
 **Settings → Download backup** (or the `backup` command), stop the app on the
 new host, copy the file to its database path
 (`/var/lib/user-management/users.db`, owned by `accounts`), and start it.
-Droplet backups cover all three apps when they share a droplet.
+Droplet backups cover all the apps when they share a droplet.
 
 ## Tests
 
