@@ -253,4 +253,4 @@
           Both apps were already registered, so their secrets are unchanged
           (make a new one under Apps at https://{{ app_domain }} if one was lost).
       ansible.builtin.debug:
-        msg: "{{ ('Imported. ' ~ (how_to_save if secrets else unchanged)) if real else 'Dry run: nothing changed. Run again with -e dry_run=false to do it.' }}"
+        msg: "{{ ('Imported. ' ~ (how_to_save if secrets else unchanged)) if real else 'Dry run: nothing changed. Run `make import-users DRY_RUN=false` to do it.' }}"

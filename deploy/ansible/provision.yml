@@ -270,10 +270,27 @@
         mode: "0600"
       loop: "{{ ssh_authorized_keys }}"
 
+    # A broken third-party repo (e.g. Caddy's Cloudsmith one returning 402)
+    # fails the index refresh. Then skip updates with a warning rather than
+    # stopping the whole run; anything else still fails.
     - name: Install updates
-      ansible.builtin.apt:
-        update_cache: true
-        upgrade: dist
+      block:
+        - name: Install updates
+          ansible.builtin.apt:
+            update_cache: true
+            upgrade: dist
+      rescue:
+        - name: Stop unless it was the index refresh that failed
+          ansible.builtin.fail:
+            msg: "{{ ansible_failed_result.msg }}"
+          when: "'update apt cache' not in ansible_failed_result.msg"
+
+        - name: Warn that updates were skipped
+          ansible.builtin.debug:
+            msg: >-
+              Updates skipped: apt couldn't refresh its index
+              ({{ ansible_failed_result.msg }}). Carrying on; run provision
+              again once the repo is back.
 
     - name: Install packages
       ansible.builtin.apt:
@@ -297,10 +314,17 @@
         components: main
         signed_by: https://dl.cloudsmith.io/public/caddy/stable/gpg.key
 
+    - name: Check whether Caddy is installed
+      ansible.builtin.stat:
+        path: /usr/bin/caddy
+      register: caddy_bin
+
+    # Only on a new droplet; after that Caddy updates come with the rest above.
     - name: Install Caddy
       ansible.builtin.apt:
         name: caddy
         update_cache: true
+      when: not caddy_bin.stat.exists
 
     - name: Create the service user
       ansible.builtin.user:

@@ -1,7 +1,7 @@
 BINARY := user-management
 LDFLAGS := -s -w
 
-.PHONY: dev run test build build-linux build-linux-arm provision deploy clean
+.PHONY: dev run test build build-linux build-linux-arm provision deploy backup import-users clean
 
 # Serve templates/static from disk: edit HTML/JS/CSS and just refresh.
 # Port 8100, so the tracker (8080) and planner (8090) can run alongside.
@@ -31,6 +31,16 @@ provision:
 
 deploy:
 	cd deploy/ansible && ansible-playbook deploy.yml
+
+# Backs up all three apps' databases, on the droplet and under deploy/ansible/backups/.
+backup:
+	cd deploy/ansible && ansible-playbook backup.yml
+
+# Dry run by default. For real: make import-users DRY_RUN=false [PREFER=tracker|planner]
+DRY_RUN ?= true
+PREFER ?=
+import-users:
+	cd deploy/ansible && ansible-playbook import-users.yml -e dry_run=$(DRY_RUN) -e prefer=$(PREFER)
 
 clean:
 	rm -rf bin
