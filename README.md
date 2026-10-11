@@ -38,9 +38,6 @@ port 8100, so the tracker (8080) and planner (8090) can run alongside it.
 | Sign-in | Passwords are bcrypt hashes; session tokens are stored only as SHA-256 hashes. Sessions last 30 days from last use. Sign-in attempts are limited per address and per username. |
 | Offline | Installable as an app. No pages are kept offline, since account pages shouldn't linger on a device. |
 
-Not built yet (see PLAN.md's build order): the SSO settings in the tracker's
-and planner's own deploys, and the rollout.
-
 ## Configuration
 
 Set with a flag or an environment variable. Flags go **before** any command.
@@ -109,31 +106,33 @@ deploy creates that user admin instead (`UM_ADMIN_PASSWORD`, or a random one
 printed at the end). Don't do that before importing: an existing `admin` here
 would be left alone by the import, keeping the new password.
 
-Run the playbooks from `deploy/ansible/`. Rolling out single sign-on, in
-order:
+Run these from the repo root (`with-do` or any way of setting
+`DIGITALOCEAN_TOKEN`). Rolling out single sign-on, in order:
 
 ```sh
-cd deploy/ansible
-cp vars.example.yml vars.yml       # set dns_zone, tracker_url, planner_url
+cp deploy/ansible/vars.example.yml deploy/ansible/vars.yml   # set dns_zone, tracker_url, planner_url
 export DIGITALOCEAN_TOKEN=...
 
 # 1. DNS record for accounts.<dns_zone>, service user, then a first deploy
-ansible-playbook provision.yml
-# 2. Later updates (make deploy from the repo root does the same)
-ansible-playbook deploy.yml
+make provision
+# 2. Later updates
+make deploy
 # 3. Back up all three databases, here and under deploy/ansible/backups/
-ansible-playbook backup.yml
+make backup
 # 4. Dry run: shows who'd be created and which password is kept
-ansible-playbook import-users.yml                     # add -e prefer=tracker|planner to pick
+make import-users                        # add PREFER=tracker|planner to pick
 # 5. For real: backs up users.db, imports, registers both apps, starts the app
-ansible-playbook import-users.yml -e dry_run=false
-export UM_PLANNER_SECRET=...       # the planner's SSO_CLIENT_SECRET from step 5
-export UM_TRACKER_SECRET=...       # the tracker's
-# 6. Then the planner, then the tracker, each from its own repo's
-#    deploy/ansible with its SSO settings (SSO_URL=https://accounts.<domain>,
-#    SSO_INTERNAL_URL=http://127.0.0.1:8100, SSO_CLIENT_ID planner/tracker,
-#    the secret from the variable above). Test each from an installed PWA.
+make import-users DRY_RUN=false
+export UM_PLANNER_SECRET=...             # the planner's SSO_CLIENT_SECRET from step 5
+export UM_TRACKER_SECRET=...             # the tracker's
+# 6. Then the planner, then the tracker: set sso_url (https://accounts.<domain>)
+#    and base_url (the app's own address) in its deploy/ansible/vars.yml and
+#    `make deploy` from its repo. Test each from an installed PWA.
 ```
+
+If a third-party apt repo is down (Caddy's has returned 402), provision
+skips the system updates with a warning and carries on; Caddy is only
+installed from it on a new droplet.
 
 `import-users.yml` copies the tracker's and planner's databases with their
 own `backup` commands into a temporary folder only this app's service user

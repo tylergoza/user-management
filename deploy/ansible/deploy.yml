@@ -244,8 +244,8 @@
       vars:
         held: >-
           Installed but not started: there are no users yet, and starting now
-          would leave /setup open. Run import-users.yml (a dry run first, then
-          -e dry_run=false), which starts it at https://{{ app_domain }}.
+          would leave /setup open. Run `make import-users` (a dry run first, then
+          `make import-users DRY_RUN=false`), which starts it at https://{{ app_domain }}.
       ansible.builtin.debug:
         msg: >-
           {{ held if hold_start

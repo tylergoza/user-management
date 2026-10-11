@@ -5,11 +5,9 @@ production planner stop keeping their own passwords and sign people in
 through this app instead. Each person has one username and password, and an
 admin adds people and sets what they can do in each app from here.
 
-Status: steps 1 to 5 of the build order are built (this service, SSO
-endpoints, `import-users`, and SSO in the planner and the tracker, each on
-an `sso` branch in its repo). Step 6 is half done: this service's Ansible
-is built; the SSO settings in the apps' deploys are not. Steps 7 onward
-are not.
+Status: steps 1 to 7 are done: User Management is live at
+accounts.mountainviewbaptist.cloud and both apps sign in through it
+(rolled out 2026-10-10). Step 8, cleanup, is due after a few weeks.
 
 ## What the apps do today
 
