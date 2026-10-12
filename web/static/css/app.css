@@ -273,6 +273,8 @@ h1 .badge { vertical-align: middle; font-size: .8rem; }
 .details { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px 20px; margin: 0 0 12px; }
 .details dt { color: var(--muted); font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; }
 .details dd { margin: 0; }
+.details--copy { grid-template-columns: 1fr; }
+.details--copy dd { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 
 /* ---------- Tables (stack into cards on phones) ---------- */
 

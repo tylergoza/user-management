@@ -41,6 +41,7 @@
       - { name: production-planner, user: "{{ planner_user }}", bin: "{{ planner_bin }}", db: "{{ planner_db }}", dir: "{{ planner_backup_dir }}" }
       - { name: maintenance-tracker, user: "{{ tracker_user }}", bin: "{{ tracker_bin }}", db: "{{ tracker_db }}", dir: "{{ tracker_backup_dir }}" }
       - { name: event-planner, user: "{{ events_user }}", bin: "{{ events_bin }}", db: "{{ events_db }}", dir: "{{ events_backup_dir }}" }
+      - { name: church-calendar, user: "{{ calendar_user }}", bin: "{{ calendar_bin }}", db: "{{ calendar_db }}", dir: "{{ calendar_backup_dir }}" }
   tasks:
     - name: Look for each app's binary
       ansible.builtin.stat:

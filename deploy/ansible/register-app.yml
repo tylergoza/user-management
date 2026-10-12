@@ -10,9 +10,10 @@
 #   ansible-playbook register-app.yml -e app=events -e copy_access_from=   # copy nobody
 #   ansible-playbook register-app.yml -e app=events -e dry_run=false -e keychain_service=    # print it instead
 # An sso_apps entry with roles / rename_roles also sets the app's roles and
-# moves people between roles (events: helper, planner, admin; user -> helper),
-# even if the app is already registered. Apps without them keep their roles.
-# Needs the app's address in vars.yml (events_url, planner_url or
+# moves people between roles (events: helper, planner, admin; user -> helper.
+# calendar: member, scheduler, admin), even if the app is already registered.
+# Apps without them keep their roles.
+# Needs the app's address in vars.yml (calendar_url, events_url, planner_url or
 # tracker_url). Safe to run again: an app that's already registered keeps its
 # secret, and only people without a row for it are given access.
 #

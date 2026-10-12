@@ -4,7 +4,8 @@ One place for the church's user accounts. People get one username and
 password for every church app, and user admins decide who can use which app.
 The [maintenance tracker](../maintenance_tracking) and the
 [production planner](../production_planning) sign people in through it, and so
-does the [event planner](../event_planning).
+do the [event planner](../event_planning) and the
+[church calendar](../calendar).
 See [PLAN.md](PLAN.md) for the design and what's built so far.
 
 Built the same way as the other apps:
@@ -23,7 +24,8 @@ make dev                     # http://127.0.0.1:8100, edits to web/ show on refr
 ```
 
 The first visit goes to `/setup` to create the first user admin. It runs on
-port 8100, so the tracker (8080), planner (8090) and event planner (8110) can run alongside it.
+port 8100, so the tracker (8080), planner (8090), event planner (8110) and
+calendar (8120) can run alongside it.
 
 ## Features
 
@@ -109,6 +111,23 @@ other than `admin`; suspended access stays suspended; existing rows
 are never touched). Each grant goes in the audit log, and a count is printed.
 `--dry-run` changes nothing. `register-app -h` has the details.
 
+### Connecting an app from inside it
+
+`register-app` with the Keychain and Ansible keeps working, but an app can
+also be connected without the command line:
+
+1. Here, **Apps → Register** (client ID, the app's address, roles). The
+   page that follows shows User Management's address, the client ID and the
+   secret, each with a **Copy** button. The secret is shown only once.
+2. In the app, **Connections → Single sign-on**: paste those three,
+   **Save**, then **Test sign-in**. The app checks the client ID and secret
+   first, server to server, by trading a made-up code at `/token`: a good
+   pair gets `invalid_grant`, a bad one `invalid_client`. So no extra
+   endpoint is needed.
+
+**Make a new one** on an app's page shows the same three values. An
+`SSO_*` variable in the app's environment overrides what's saved there.
+
 ## Deploying
 
 The app is one binary plus one `.db` file, behind [Caddy](https://caddyserver.com)
@@ -159,7 +178,7 @@ export UM_TRACKER_SECRET=...             # the tracker's
 #    `make deploy` from its repo. Test each from an installed PWA.
 ```
 
-#### Adding the event planner (and rotating any app's secret)
+#### Adding the event planner or calendar (and rotating any app's secret)
 
 The event planner (`../event_planning`) runs on 127.0.0.1:8110 as user
 `events` (`/usr/local/bin/event-planner`, `/var/lib/event-planner/events.db`),
@@ -170,7 +189,9 @@ with-do make register-app APP=events                            # dry run, the e
 with-do make register-app APP=events DRY_RUN=false              # register it; secret saved as um-events
 with-do make register-app APP=planner DRY_RUN=false ROTATE=true # new planner secret, saved over um-planner
 with-do make register-app APP=tracker DRY_RUN=false ROTATE=true
-# then, at once, in the app's repo (../event_planning, ../production_planning, ../maintenance_tracking):
+with-do make register-app APP=calendar                          # dry run, the church calendar
+with-do make register-app APP=calendar DRY_RUN=false            # register it; secret saved as um-calendar
+# then, at once, in the app's repo (../event_planning, ../calendar, ../production_planning, ../maintenance_tracking):
 with-do with-um make deploy
 # (with sso_url https://accounts.<domain> and base_url, its own address, set.)
 ```
@@ -183,9 +204,18 @@ run above shows the change and `DRY_RUN=false` updates its roles to helper,
 planner, admin and moves everyone who has `user` to `helper` (an app that is
 already registered keeps its secret).
 
-`APP` is a key of `sso_apps` in `deploy/ansible/defaults.yml` (`events`,
-`planner`, `tracker`); each entry holds the app's name, address (`events_url`,
-`planner_url`, `tracker_url` in `vars.yml`), Keychain service, secret variable
+The church calendar (`../calendar`) runs on 127.0.0.1:8120 as user
+`calendar` (`/usr/local/bin/church-calendar`,
+`/var/lib/church-calendar/calendar.db`), signs in as client `calendar` and
+needs `calendar_url` in `vars.yml`. Its roles are `member`, `scheduler` and
+`admin`. Everyone with access to the event planner gets the same access to
+the calendar (`copy_access_from: events`): helpers and planners become
+`member`, admins stay `admin`. Then give the office staff `scheduler` on
+their pages here.
+
+`APP` is a key of `sso_apps` in `deploy/ansible/defaults.yml` (`calendar`,
+`events`, `planner`, `tracker`); each entry holds the app's name, address
+(`calendar_url`, `events_url`, `planner_url`, `tracker_url` in `vars.yml`), Keychain service, secret variable
 and who it copies access from. A new app is one entry there plus one line in
 your `with-um`. The planner and tracker were registered by `import-users`, so
 without `ROTATE=true` their run changes nothing (they copy access from no one
@@ -196,11 +226,12 @@ event planner (`copy_access_from: planner` in its entry; override with
 Ansible writes a log file. Running it again is safe.
 
 When a real run makes a secret (a new app, or `ROTATE=true`) on a Mac, it is
-saved to your login Keychain under the app's service (`um-events`,
-`um-planner`, `um-tracker`; `-U` updates the old item) and not shown. It goes
+saved to your login Keychain under the app's service (`um-calendar`,
+`um-events`, `um-planner`, `um-tracker`; `-U` updates the old item) and not shown. It goes
 to `security -i` on stdin, so it is never in a command line, and every task
 that touches it has `no_log`. `with-um` (in your `~/.zshrc`) must export
-`UM_EVENTS_SECRET`, `UM_PLANNER_SECRET` and `UM_TRACKER_SECRET` from those
+`UM_CALENDAR_SECRET`, `UM_EVENTS_SECRET`, `UM_PLANNER_SECRET` and
+`UM_TRACKER_SECRET` from those
 services. Use `KEYCHAIN=other-name`, or `KEYCHAIN=` to print the secret
 instead (also what happens on a non-Mac or if the save fails: save it then, it
 isn't shown again). `ROTATE=true` invalidates the old secret at once, so the
@@ -219,7 +250,7 @@ real run while Ansible is set to write a log file. Keep them somewhere safe
 (a password manager) and export them before deploying the apps. Running it
 again is safe; apps already registered keep their secrets.
 
-`backup.yml` (all four apps) can be run any time: it skips apps that aren't installed, leaves
+`backup.yml` (all five apps, the calendar included) can be run any time: it skips apps that aren't installed, leaves
 `manual-<time>.db` in each app's backups folder on the droplet, and copies
 them to `deploy/ansible/backups/<time>/` (gitignored; they hold password
 hashes).

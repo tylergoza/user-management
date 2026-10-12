@@ -299,6 +299,16 @@ func TestTokenAttacks(t *testing.T) {
 		t.Errorf("expired code: %d", status)
 	}
 
+	// The apps' Connections pages check a client ID and secret before the
+	// sign-in test by trading a made-up code: a good pair gets the code
+	// refused, a bad one invalid_client. Keep these answers apart.
+	if status, body := planner.token("check-client", planner.callback, "check-client"); status != 400 || body["error"] != "invalid_grant" {
+		t.Errorf("client check, good secret: %d %v", status, body)
+	}
+	if status, body := wrong.token("check-client", planner.callback, "check-client"); status != 401 || body["error"] != "invalid_client" {
+		t.Errorf("client check, wrong secret: %d %v", status, body)
+	}
+
 	// No credentials at all.
 	resp, _ := http.PostForm(admin.base+"/token", url.Values{"grant_type": {"authorization_code"}})
 	resp.Body.Close()
@@ -467,6 +477,10 @@ func TestManageApps(t *testing.T) {
 	app, _ := st.GetAppByClientID("planner")
 	if _, err := st.AuthenticateApp("planner", m[1]); err != nil {
 		t.Errorf("the shown secret should work: %v", err)
+	}
+	// The three values the app's Connections page asks for, each with a copy button.
+	if !strings.Contains(body, "SSO_URL="+admin.base) || strings.Count(body, `data-action="copy#copy"`) != 3 {
+		t.Errorf("expected the address, client ID and secret with copy buttons:\n%s", body)
 	}
 	if body := admin.get("/admin/apps/"+itoa(app.ID), 200); strings.Contains(body, m[1]) {
 		t.Error("the secret must only be shown once")
