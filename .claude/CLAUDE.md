@@ -12,7 +12,7 @@ reinventing them.
   so their foreign keys keep working.
 - Domain-specific permissions (e.g. planner `production_members`) stay in
   the apps; this service only holds per-app roles.
-- Cookies are `um_*`; local port 8100 (tracker 8080, planner 8090, event planner 8110).
+- Cookies are `um_*`; local port 8100 (tracker 8080, planner 8090, event planner 8110, calendar 8120).
 - Deploys onto the maintenance tracker's droplet with its own Caddy site
   file; the main Caddyfile text must stay identical in all three repos.
 - The user runs all `git commit`s themselves (YubiKey signing). Don't commit.

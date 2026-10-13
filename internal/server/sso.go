@@ -94,6 +94,11 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 
 // handleToken swaps a sign-in code for a grant. The app has already been
 // checked by requireClient.
+//
+// It's also the apps' client check: their Connections pages send a
+// made-up code to test a client ID and secret, and tell a good pair
+// (invalid_grant) from a bad one (invalid_client, from requireClient).
+// Keep those two answers apart.
 func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 	app := currentApp(r)
 	if r.PostFormValue("grant_type") != "authorization_code" {

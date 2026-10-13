@@ -127,11 +127,21 @@ func (s *Server) handleAppCreate(w http.ResponseWriter, r *http.Request) {
 }
 
 // renderSecret shows a new client secret, the only time it's ever shown.
-// It isn't put in a flash cookie or a redirect.
+// It isn't put in a flash cookie or a redirect. Alongside it are the other
+// two values the app's Connections page asks for.
 func (s *Server) renderSecret(w http.ResponseWriter, r *http.Request, a *store.App, secret string, isNew bool) {
 	s.render(w, r, http.StatusOK, "admin/apps/secret", map[string]any{
-		"Title": a.Name + " secret", "App": a, "Secret": secret, "New": isNew,
+		"Title": a.Name + " secret", "App": a, "Secret": secret, "New": isNew, "Address": s.ownAddress(r),
 	})
+}
+
+// ownAddress is this service's address as the browser reached it, which
+// is the one the apps send people to for signing in.
+func (s *Server) ownAddress(r *http.Request) string {
+	if s.isHTTPS(r) {
+		return "https://" + r.Host
+	}
+	return "http://" + r.Host
 }
 
 func (s *Server) handleAppEdit(w http.ResponseWriter, r *http.Request) {

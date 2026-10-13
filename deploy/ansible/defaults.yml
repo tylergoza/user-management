@@ -94,6 +94,10 @@ events_user: events
 events_bin: /usr/local/bin/event-planner
 events_db: /var/lib/event-planner/events.db
 events_backup_dir: /var/lib/event-planner/backups
+calendar_user: calendar
+calendar_bin: /usr/local/bin/church-calendar
+calendar_db: /var/lib/church-calendar/calendar.db
+calendar_backup_dir: /var/lib/church-calendar/backups
 
 # import-users.yml: the apps' public https addresses. They're registered here
 # with redirect URI <url>/auth/callback. Only needed while an app isn't
@@ -103,6 +107,9 @@ planner_url: ""
 # register-app.yml: the event planner's public https address (registered as
 # client "events", redirect URI <events_url>/auth/callback).
 events_url: ""
+# register-app.yml: the church calendar's public https address (client
+# "calendar").
+calendar_url: ""
 # register-app.yml: the apps it can register or rotate (-e app=<key>, or
 # make register-app APP=<key>). The key is the client ID. name must match
 # what import-users registered, or a re-run looks like a rename. keychain is
@@ -117,6 +124,14 @@ events_url: ""
 #             with the old role gets the new one)
 # Adding an app = one entry here + one line in your `with-um` in ~/.zshrc.
 sso_apps:
+  calendar:
+    name: Church Calendar
+    url: "{{ calendar_url }}"
+    keychain: um-calendar
+    env: UM_CALENDAR_SECRET
+    deploy_repo: calendar
+    copy_access_from: events
+    roles: member,scheduler,admin
   events:
     name: Event Planner
     url: "{{ events_url }}"
