@@ -2,10 +2,11 @@
 
 One place for the church's user accounts. People get one username and
 password for every church app, and user admins decide who can use which app.
-The [maintenance tracker](../maintenance_tracking) and the
-[production planner](../production_planning) sign people in through it, and so
-do the [event planner](../event_planning) and the
-[church calendar](../calendar).
+The [maintenance tracker](../maintenance_tracking), the
+[production planner](../production_planning), the
+[event planner](../event_planning) and the [church calendar](../calendar) can
+sign people in through it. Each of those apps works without it, so User
+Management is only worth running once at least one app is connected to it.
 See [PLAN.md](PLAN.md) for the design and what's built so far.
 
 Built the same way as the other apps:
@@ -14,6 +15,31 @@ Built the same way as the other apps:
 - **Database:** SQLite (one file, pure-Go driver, no CGO)
 - **Frontend:** server-rendered HTML + [Stimulus](https://stimulus.hotwired.dev), vendored, with the
   same no-build autoloader. No Node, no bundler.
+
+## Works alone, or with the other church apps
+
+Every church app installs and works on its own, with its own login. None of
+them needs User Management. On its own, this service only holds accounts and
+a tile page, so it is only worth running once at least one app is connected
+to it. Connecting is optional and off until you set it up; while it's off, an
+app acts as if User Management doesn't exist.
+
+Each app keeps its own data and its own session. After a sign-in through
+here it keeps a small local copy of the person (matched by their User
+Management ID), so its history stays put. Permissions that belong to an app,
+such as who is on a production, stay in that app. This service holds only
+accounts and one role per app.
+
+| App | What signing in through User Management changes | What the app keeps |
+|-----|--------------------------------------------------|--------------------|
+| [Maintenance tracker](../maintenance_tracking) | One church login instead of a password in the app. | Its own users table (existing users are linked by username), logs and problems. |
+| [Production planner](../production_planning) | Same. Role `admin` here means admin there. | Its own users, productions and production members. |
+| [Event planner](../event_planning) | Same. Roles come from here: `admin`, `planner`, `helper`. | Its own users and events. |
+| [Church calendar](../calendar) | Same. Roles: `member`, `scheduler`, `admin`. | Its own users, rooms and bookings. |
+
+Setup is in [Connecting an app from inside it](#connecting-an-app-from-inside-it)
+(no command line), [Commands](#commands) (`register-app`, `import-users`) and
+[Adding the event planner or calendar](#adding-the-event-planner-or-calendar-and-rotating-any-apps-secret).
 
 ## Quick start
 
