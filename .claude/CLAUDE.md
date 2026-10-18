@@ -22,6 +22,9 @@ reinventing them.
 - `CALENDAR_PLAN.md` is this app's part of joining `../calendar` (8120);
   tick its checkboxes as steps are done. Everything there is optional:
   this app must keep working when `CALENDAR_URL` is unset.
+- `DIRECTORY_PLAN.md` is this app's part of adding `../member_directory`
+  (8130): registration only, no API changes. Member profiles never live
+  here; this service stays logins and roles.
 - `CONNECTIONS_PLAN.md` (design in `../event_planning/CONNECTIONS_PLAN.md`): links to
   other apps are admin settings on `/admin/connections`; env vars override
   them per whole connection. Secrets encrypted with `secrets.key`.
@@ -35,3 +38,4 @@ reinventing them.
   is a subset of the full one, so when the owning app is connected the
   local rows start referencing it (its ID plus a cached name) instead of
   being rebuilt.
+- `MEMBERS_PLAN.md`: this app's part of the website members area (design in `../.claude/plans/members-site.md`): browser sign-in, delegated per-app tokens, default roles. Tick its checkboxes as steps are done.
