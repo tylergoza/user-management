@@ -47,6 +47,8 @@ planner_url: https://productions.example.org
 events_url: https://events.example.org
 # The church calendar's (its access list starts from the event planner's).
 calendar_url: https://calendar.example.org
+# The member directory's (its access list starts from the event planner's too).
+directory_url: https://directory.example.org
 # copy_access_from: planner
 # rotate_secret: false          # true: new secret for an already-registered app
 # keychain_service: um-events   # overrides the app's Keychain item (sso_apps); "" prints the secret

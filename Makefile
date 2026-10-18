@@ -42,18 +42,18 @@ PREFER ?=
 import-users:
 	cd deploy/ansible && ansible-playbook import-users.yml -e dry_run=$(DRY_RUN) -e prefer=$(PREFER)
 
-# Registers an app (APP=calendar, events, planner or tracker; see sso_apps in
+# Registers an app (APP=calendar, directory, events, planner or tracker; see sso_apps in
 # deploy/ansible/defaults.yml) and copies its access list from the app named
 # there. Dry run by default. For real: make register-app DRY_RUN=false
 # ROTATE=true makes a new secret for an already-registered app (the old one
 # stops working at once: redeploy the app straight away). On a Mac the secret
 # is saved to the Keychain under the app's name (um-events, um-planner, ...)
 # and not shown. KEYCHAIN=name overrides that; KEYCHAIN= (empty) prints it.
-# APP is required: calendar, events, planner or tracker (the keys of sso_apps in
+# APP is required: calendar, directory, events, planner or tracker (the keys of sso_apps in
 # deploy/ansible/defaults.yml).
 ROTATE ?= false
 register-app:
-	@test -n "$(APP)" || { echo 'Set APP: make register-app APP=calendar|events|planner|tracker'; exit 1; }
+	@test -n "$(APP)" || { echo 'Set APP: make register-app APP=calendar|directory|events|planner|tracker'; exit 1; }
 	cd deploy/ansible && ansible-playbook register-app.yml -e app=$(APP) -e dry_run=$(DRY_RUN) -e rotate_secret=$(ROTATE)$(if $(filter undefined,$(origin KEYCHAIN)),, -e "keychain_service=$(KEYCHAIN)")
 
 clean:

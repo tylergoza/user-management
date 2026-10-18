@@ -1,6 +1,9 @@
 # Backs up every app's database on the shared droplet (User Management, the
-# production planner, the maintenance tracker and the event planner, whichever are installed)
-# with each app's own `backup` command, then copies them to this machine.
+# production planner, the maintenance tracker, the event planner, the church
+# calendar and the member directory, whichever are installed) with each app's
+# own `backup` command, then copies them to this machine. Only the databases:
+# the directory's photos/ and each app's secrets.key are backed up by the
+# app's own deploy (see its README).
 #
 #   export DIGITALOCEAN_TOKEN=...
 #   ansible-playbook backup.yml
@@ -42,6 +45,7 @@
       - { name: maintenance-tracker, user: "{{ tracker_user }}", bin: "{{ tracker_bin }}", db: "{{ tracker_db }}", dir: "{{ tracker_backup_dir }}" }
       - { name: event-planner, user: "{{ events_user }}", bin: "{{ events_bin }}", db: "{{ events_db }}", dir: "{{ events_backup_dir }}" }
       - { name: church-calendar, user: "{{ calendar_user }}", bin: "{{ calendar_bin }}", db: "{{ calendar_db }}", dir: "{{ calendar_backup_dir }}" }
+      - { name: church-directory, user: "{{ directory_user }}", bin: "{{ directory_bin }}", db: "{{ directory_db }}", dir: "{{ directory_backup_dir }}" }
   tasks:
     - name: Look for each app's binary
       ansible.builtin.stat:

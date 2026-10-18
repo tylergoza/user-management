@@ -4,8 +4,8 @@ One place for the church's user accounts. People get one username and
 password for every church app, and user admins decide who can use which app.
 The [maintenance tracker](../maintenance_tracking), the
 [production planner](../production_planning), the
-[event planner](../event_planning) and the [church calendar](../calendar) can
-sign people in through it. Each of those apps works without it, so User
+[event planner](../event_planning), the [church calendar](../calendar) and the
+[member directory](../member_directory) can sign people in through it. Each of those apps works without it, so User
 Management is only worth running once at least one app is connected to it.
 See [PLAN.md](PLAN.md) for the design and what's built so far.
 
@@ -36,10 +36,11 @@ accounts and one role per app.
 | [Production planner](../production_planning) | Same. Role `admin` here means admin there. | Its own users, productions and production members. |
 | [Event planner](../event_planning) | Same. Roles come from here: `admin`, `planner`, `helper`. | Its own users and events. |
 | [Church calendar](../calendar) | Same. Roles: `member`, `scheduler`, `admin`. | Its own users, rooms and bookings. |
+| [Member directory](../member_directory) | Same. Roles: `member`, `editor`, `admin`. | Its own users and every profile (people, households, notes); none of that comes here. |
 
 Setup is in [Connecting an app from inside it](#connecting-an-app-from-inside-it)
 (no command line), [Commands](#commands) (`register-app`, `import-users`) and
-[Adding the event planner or calendar](#adding-the-event-planner-or-calendar-and-rotating-any-apps-secret).
+[Adding the event planner, calendar or directory](#adding-the-event-planner-calendar-or-directory-and-rotating-any-apps-secret).
 
 ## Quick start
 
@@ -50,8 +51,8 @@ make dev                     # http://127.0.0.1:8100, edits to web/ show on refr
 ```
 
 The first visit goes to `/setup` to create the first user admin. It runs on
-port 8100, so the tracker (8080), planner (8090), event planner (8110) and
-calendar (8120) can run alongside it.
+port 8100, so the tracker (8080), planner (8090), event planner (8110),
+calendar (8120) and member directory (8130) can run alongside it.
 
 ## Features
 
@@ -204,7 +205,7 @@ export UM_TRACKER_SECRET=...             # the tracker's
 #    `make deploy` from its repo. Test each from an installed PWA.
 ```
 
-#### Adding the event planner or calendar (and rotating any app's secret)
+#### Adding the event planner, calendar or directory (and rotating any app's secret)
 
 The event planner (`../event_planning`) runs on 127.0.0.1:8110 as user
 `events` (`/usr/local/bin/event-planner`, `/var/lib/event-planner/events.db`),
@@ -217,7 +218,9 @@ with-do make register-app APP=planner DRY_RUN=false ROTATE=true # new planner se
 with-do make register-app APP=tracker DRY_RUN=false ROTATE=true
 with-do make register-app APP=calendar                          # dry run, the church calendar
 with-do make register-app APP=calendar DRY_RUN=false            # register it; secret saved as um-calendar
-# then, at once, in the app's repo (../event_planning, ../calendar, ../production_planning, ../maintenance_tracking):
+with-do make register-app APP=directory                         # dry run, the member directory
+with-do make register-app APP=directory DRY_RUN=false           # register it; secret saved as um-directory
+# then, at once, in the app's repo (../event_planning, ../calendar, ../member_directory, ../production_planning, ../maintenance_tracking):
 with-do with-um make deploy
 # (with sso_url https://accounts.<domain> and base_url, its own address, set.)
 ```
@@ -239,9 +242,21 @@ the calendar (`copy_access_from: events`): helpers and planners become
 `member`, admins stay `admin`. Then give the office staff `scheduler` on
 their pages here.
 
+The member directory (`../member_directory`) runs on 127.0.0.1:8130 as user
+`directory` (`/usr/local/bin/church-directory`,
+`/var/lib/church-directory/directory.db`), signs in as client `directory`
+and needs `directory_url` in `vars.yml`. Its roles are `member`, `editor`
+and `admin`. Like the calendar it copies the event planner's access list
+(`copy_access_from: events`): helpers and planners become `member`, and the
+event planner's admins become directory `admin`, so check the dry run and
+turn any who shouldn't see everything back to `member`. Then give the office
+staff `editor`. The directory uses only the existing API (its **Link to
+user** picker lists `/api/v1/apps/directory/users`, and it suspends a
+linked user under 13 with a `PATCH`); profiles never come here.
+
 `APP` is a key of `sso_apps` in `deploy/ansible/defaults.yml` (`calendar`,
-`events`, `planner`, `tracker`); each entry holds the app's name, address
-(`calendar_url`, `events_url`, `planner_url`, `tracker_url` in `vars.yml`), Keychain service, secret variable
+`directory`, `events`, `planner`, `tracker`); each entry holds the app's name, address
+(`calendar_url`, `directory_url`, `events_url`, `planner_url`, `tracker_url` in `vars.yml`), Keychain service, secret variable
 and who it copies access from. A new app is one entry there plus one line in
 your `with-um`. The planner and tracker were registered by `import-users`, so
 without `ROTATE=true` their run changes nothing (they copy access from no one
@@ -253,10 +268,10 @@ Ansible writes a log file. Running it again is safe.
 
 When a real run makes a secret (a new app, or `ROTATE=true`) on a Mac, it is
 saved to your login Keychain under the app's service (`um-calendar`,
-`um-events`, `um-planner`, `um-tracker`; `-U` updates the old item) and not shown. It goes
+`um-directory`, `um-events`, `um-planner`, `um-tracker`; `-U` updates the old item) and not shown. It goes
 to `security -i` on stdin, so it is never in a command line, and every task
 that touches it has `no_log`. `with-um` (in your `~/.zshrc`) must export
-`UM_CALENDAR_SECRET`, `UM_EVENTS_SECRET`, `UM_PLANNER_SECRET` and
+`UM_CALENDAR_SECRET`, `UM_DIRECTORY_SECRET`, `UM_EVENTS_SECRET`, `UM_PLANNER_SECRET` and
 `UM_TRACKER_SECRET` from those
 services. Use `KEYCHAIN=other-name`, or `KEYCHAIN=` to print the secret
 instead (also what happens on a non-Mac or if the save fails: save it then, it
@@ -276,7 +291,7 @@ real run while Ansible is set to write a log file. Keep them somewhere safe
 (a password manager) and export them before deploying the apps. Running it
 again is safe; apps already registered keep their secrets.
 
-`backup.yml` (all five apps, the calendar included) can be run any time: it skips apps that aren't installed, leaves
+`backup.yml` (all six apps' databases, the calendar and directory included) can be run any time: it skips apps that aren't installed, leaves
 `manual-<time>.db` in each app's backups folder on the droplet, and copies
 them to `deploy/ansible/backups/<time>/` (gitignored; they hold password
 hashes).

@@ -98,6 +98,10 @@ calendar_user: calendar
 calendar_bin: /usr/local/bin/church-calendar
 calendar_db: /var/lib/church-calendar/calendar.db
 calendar_backup_dir: /var/lib/church-calendar/backups
+directory_user: directory
+directory_bin: /usr/local/bin/church-directory
+directory_db: /var/lib/church-directory/directory.db
+directory_backup_dir: /var/lib/church-directory/backups
 
 # import-users.yml: the apps' public https addresses. They're registered here
 # with redirect URI <url>/auth/callback. Only needed while an app isn't
@@ -110,6 +114,9 @@ events_url: ""
 # register-app.yml: the church calendar's public https address (client
 # "calendar").
 calendar_url: ""
+# register-app.yml: the member directory's public https address (client
+# "directory").
+directory_url: ""
 # register-app.yml: the apps it can register or rotate (-e app=<key>, or
 # make register-app APP=<key>). The key is the client ID. name must match
 # what import-users registered, or a re-run looks like a rename. keychain is
@@ -132,6 +139,14 @@ sso_apps:
     deploy_repo: calendar
     copy_access_from: events
     roles: member,scheduler,admin
+  directory:
+    name: Member Directory
+    url: "{{ directory_url }}"
+    keychain: um-directory
+    env: UM_DIRECTORY_SECRET
+    deploy_repo: member_directory
+    copy_access_from: events
+    roles: member,editor,admin
   events:
     name: Event Planner
     url: "{{ events_url }}"
