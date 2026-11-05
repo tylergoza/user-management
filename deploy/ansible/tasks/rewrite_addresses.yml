@@ -1,6 +1,7 @@
 # Swaps old host names for new ones in a restored database, before the app first
 # starts, so it comes up already pointing at the new addresses. Exact host names
-# only, so anything else on the old domain is left alone. Also drops saved loopback
+# only, so anything else on the old domain is left alone. The new names get https
+# (a saved http:// would send tokens in the clear). Also drops saved loopback
 # internal addresses, since apps listen on the VPC address. Safe to run again.
 # Needs: address_rewrites, rewrite_columns, rewrite_sqlite.
 - name: Check the rewrites are plain host names
@@ -31,6 +32,7 @@
       {% for c in present %}
       {% for r in address_rewrites %}
       UPDATE {{ c.table }} SET {{ c.column }} = replace({{ c.column }}, '{{ r.from }}', '{{ r.to }}') WHERE instr({{ c.column }}, '{{ r.from }}') > 0;
+      UPDATE {{ c.table }} SET {{ c.column }} = replace({{ c.column }}, 'http://{{ r.to }}', 'https://{{ r.to }}') WHERE instr({{ c.column }}, 'http://{{ r.to }}') > 0;
       {% endfor %}
       {% endfor %}
       DELETE FROM settings WHERE key IN ('sso_internal_url', 'sso_pending_internal_url', 'calendar_internal_url')
