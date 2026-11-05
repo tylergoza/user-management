@@ -1,0 +1,42 @@
+# Moves the app to apps_box from another box: backs it up there (and stops it
+# for good), provisions this box without starting the app, restores onto it.
+# DNS isn't touched: it points at the edge box, whose site file the provision
+# step rewrites for the new address. The old box keeps its data folder as a
+# fallback; moving back is the same command the other way round.
+#
+#   with-do-church make move FROM=apps-1      # apps_box is the new home
+
+- name: Check the move makes sense
+  hosts: localhost
+  gather_facts: false
+  vars_files: [defaults.yml, vars.yml]
+  tasks:
+    - name: Check from is set
+      ansible.builtin.assert:
+        that: from is defined and from | length > 0
+        fail_msg: Say where it's coming from, e.g. make move FROM=apps-1
+        quiet: true
+
+    - name: Check it's moving somewhere else
+      ansible.builtin.assert:
+        that: from != apps_box
+        fail_msg: "{{ from }} is already {{ apps_box }}. Set apps_box in vars.yml to the box it should move to."
+        quiet: true
+
+    - name: Check the account
+      ansible.builtin.include_tasks: tasks/check_account.yml
+
+- name: Back up the old box and stop the app there
+  ansible.builtin.import_playbook: backup.yml
+  vars:
+    stop: true
+
+- name: Provision the new box without starting the app
+  ansible.builtin.import_playbook: provision.yml
+  vars:
+    restore_pending: true
+
+- name: Restore onto the new box
+  ansible.builtin.import_playbook: restore.yml
+  vars:
+    backup: latest

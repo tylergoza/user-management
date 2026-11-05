@@ -13,11 +13,10 @@ reinventing them.
 - Domain-specific permissions (e.g. planner `production_members`) stay in
   the apps; this service only holds per-app roles.
 - Cookies are `um_*`; local port 8100 (tracker 8080, planner 8090, event planner 8110, calendar 8120, member directory 8130).
-- Deploys onto the maintenance tracker's droplet with its own Caddy site
-  file; the main Caddyfile text must stay identical in all three repos.
+- Deploy (`deploy/ansible`): runs on an apps box (`apps_box`, default `apps-1`, shared with the other apps) in the church DigitalOcean account and binds its VPC address on 8100; the edge box (`../edge_proxy`) holds Caddy, DNS points at it, and this deploy writes the app's site file there. Run commands through `with-do-church`. Its state is `users.db` only (no `secrets.key`, no signing keys: tokens are opaque and hashed in the database); `make backup` / `restore` / `move` carry it. There is no all-apps backup sweep; each app has its own `make backup`. `import-users` reads the tracker and planner on the same box only. Real `do_team` and domains live in the gitignored `vars.yml`.
 - The user runs all `git commit`s themselves (YubiKey signing). Don't commit.
 - `register-app` (internal/registerapp) registers an app and can copy another
-  app's access list; `make register-app` runs it on the droplet.
+  app's access list; `make register-app` runs it on the apps box.
   `--roles` / `--rename-role` also change an existing app's roles (see README).
 - `CALENDAR_PLAN.md` is this app's part of joining `../calendar` (8120);
   tick its checkboxes as steps are done. Everything there is optional:

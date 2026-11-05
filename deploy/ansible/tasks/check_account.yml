@@ -1,0 +1,23 @@
+# Stops unless the token is set, and (when do_team is set) belongs to do_team, so
+# nothing here can run against the wrong account by mistake. Always looks the
+# account up: the monitoring alerts need its email address.
+- name: Check the API token is set
+  ansible.builtin.assert:
+    that: do_token | length > 0
+    fail_msg: Run through with-do-church, which sets DIGITALOCEAN_TOKEN.
+    quiet: true
+
+- name: Look up the account
+  ansible.builtin.uri:
+    url: https://api.digitalocean.com/v2/account
+    headers: "{{ do_headers }}"
+  register: do_account
+
+- name: Check the token is for the right team
+  ansible.builtin.assert:
+    that: (do_account.json.account.team.name | default('')) == do_team
+    fail_msg: >-
+      This token is for team "{{ do_account.json.account.team.name | default('none') }}",
+      not "{{ do_team }}". Run through with-do-church.
+    quiet: true
+  when: do_team | length > 0

@@ -3,10 +3,14 @@
 # over). Run after deploy.yml. Only shows what it would do unless dry_run is
 # false:
 #
-#   export DIGITALOCEAN_TOKEN=...
-#   ansible-playbook import-users.yml                    # dry run
-#   ansible-playbook import-users.yml -e dry_run=false   # for real
-#   ansible-playbook import-users.yml -e prefer=tracker  # whose password wins when they differ
+#   with-do-church ansible-playbook import-users.yml     # dry run
+#   with-do-church ansible-playbook import-users.yml -e dry_run=false   # for real
+#   with-do-church ansible-playbook import-users.yml -e prefer=tracker  # whose password wins when they differ
+#
+# It reads the tracker's and planner's databases by running their `backup`
+# commands on the box, so it only sees the ones installed on the same apps box as
+# User Management; one on another box is skipped, and it stops if neither is here.
+# (Move it here with its own `make move`, or import without Ansible; README.)
 #
 # The apps' databases are copied with their own `backup` commands into a
 # temporary folder that only User Management's service user can read, and
@@ -23,6 +27,9 @@
   gather_facts: false
   vars_files: [defaults.yml, vars.yml]
   tasks:
+    - name: Check the account
+      ansible.builtin.include_tasks: tasks/check_account.yml
+
     - name: Find the droplets
       ansible.builtin.include_tasks: tasks/find_droplets.yml
 
@@ -97,7 +104,10 @@
 
     - name: Note the apps that aren't installed
       ansible.builtin.debug:
-        msg: "Skipping the {{ item.key }}: {{ item.db }} isn't on {{ inventory_hostname }}."
+        msg: >-
+          Skipping the {{ item.key }}: {{ item.db }} isn't on {{ inventory_hostname }}.
+          If it runs on another apps box, this can't reach it; the people in it
+          aren't imported.
       loop: "{{ sources | rejectattr('key', 'in', present | map(attribute='key') | list) }}"
       loop_control:
         label: "{{ item.key }}"
@@ -105,7 +115,11 @@
     - name: Check there's something to import
       ansible.builtin.assert:
         that: present | length > 0
-        fail_msg: Neither the tracker nor the planner is installed on {{ inventory_hostname }}.
+        fail_msg: >-
+          Neither the tracker nor the planner is installed on {{ inventory_hostname }}.
+          import-users runs their backup commands on the same box as User Management,
+          so it can't import from an app on another apps box. Put them on one box
+          (make move in the app's repo), then run this again.
         quiet: true
 
     - name: Check for User Management's database
@@ -233,7 +247,7 @@
 
     - name: Wait for the app to answer
       ansible.builtin.uri:
-        url: http://127.0.0.1:8100/healthz
+        url: http://{{ private_ip }}:{{ app_port }}/healthz
       register: health
       until: health.status == 200
       retries: 15

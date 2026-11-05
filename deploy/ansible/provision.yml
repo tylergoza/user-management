@@ -1,26 +1,39 @@
-# Creates the droplet, cloud firewall and DNS record if they don't exist,
-# prepares the machine (updates, Caddy, service user), then runs deploy.yml.
-# Safe to re-run: existing things are found by tag/name and left in place.
-# By default this finds the maintenance tracker's droplet by its tag and only
-# adds what User Management needs (its DNS record, service user and folders);
-# a new droplet is created only when nothing carries the tag.
+# Creates the apps box if it doesn't exist (or finds it, when another app made
+# it), its alerts and this app's DNS record, prepares the machine (updates, swap,
+# service user), then runs deploy.yml. The firewalls and the edge box come from
+# edge_proxy. Safe to re-run: existing things are found by tag/name and left in
+# place.
 #
-#   export DIGITALOCEAN_TOKEN=...
-#   ansible-playbook provision.yml          # or `make provision` from the repo root
+#   with-do-church make provision                         # or ansible-playbook provision.yml here
+#   with-do-church make provision RESTORE_PENDING=true    # then make restore
 
-- name: Create the droplet, firewall and DNS record
+- name: Create the droplet, alerts and DNS record
   hosts: localhost
   gather_facts: false
   vars_files: [defaults.yml, vars.yml]
+  vars:
+    # Created with these, and any that are missing are added to an existing box.
+    box_tags: "{{ ([apps_box, do_role_tag] + do_extra_tags) | unique }}"
   tasks:
+    - name: Check the account
+      ansible.builtin.include_tasks: tasks/check_account.yml
+
     - name: Find existing droplets
       ansible.builtin.include_tasks: tasks/find_droplets.yml
+
+    - name: Check there's an edge box
+      ansible.builtin.assert:
+        that: groups['edge'] | default([]) | length > 0
+        fail_msg: >-
+          No droplet is tagged {{ edge_tag }}, so nothing would route to this app.
+          Provision the edge box first (edge_proxy: make provision).
+        quiet: true
 
     # Fixed here because a block's `when` is re-checked for every task in it,
     # and the lookup at the end of the block changes `tagged`.
     - name: Decide whether to create a droplet
       ansible.builtin.set_fact:
-        create_droplet: "{{ tagged.json.droplets | length == 0 }}"
+        create_droplet: "{{ tagged.json.droplets | selectattr('name', 'eq', droplet_name) | list | length == 0 }}"
 
     - name: Create the droplet
       when: create_droplet
@@ -60,7 +73,7 @@
             headers: "{{ do_headers }}"
             body_format: json
             body:
-              name: "{{ droplet_name }} deploy key"
+              name: mountainview deploy key
               public_key: "{{ local_key }}"
             status_code: 201
           register: uploaded_key
@@ -80,7 +93,7 @@
               ssh_keys: "{{ [uploaded_key.json.ssh_key.id] if uploaded_key is not skipped else key_ids }}"
               backups: "{{ do_backups }}"
               monitoring: "{{ do_monitoring }}"
-              tags: "{{ [do_tag] + do_extra_tags }}"
+              tags: "{{ box_tags }}"
             status_code: 202
           register: created
           changed_when: true
@@ -93,6 +106,7 @@
           until: >-
             droplet.json.droplet.status == 'active'
             and droplet.json.droplet.networks.v4 | selectattr('type', 'eq', 'public') | list | length > 0
+            and droplet.json.droplet.networks.v4 | selectattr('type', 'eq', 'private') | list | length > 0
           retries: 60
           delay: 5
 
@@ -140,9 +154,8 @@
           when: missing | length > 0
           changed_when: true
 
-    # Also covers droplets created before do_extra_tags was set.
-    - name: Add the extra tags
-      when: do_extra_tags | length > 0
+    # Also covers a box another app created, and ones made before a tag was added.
+    - name: Add missing tags
       block:
         - name: List tags
           ansible.builtin.uri:
@@ -158,7 +171,7 @@
             body_format: json
             body: { name: "{{ item }}" }
             status_code: 201
-          loop: "{{ do_extra_tags | difference(account_tags.json.tags | map(attribute='name')) }}"
+          loop: "{{ box_tags | difference(account_tags.json.tags | map(attribute='name')) }}"
 
         - name: Tag the droplets
           ansible.builtin.uri:
@@ -168,81 +181,66 @@
             body_format: json
             body: { resources: [{ resource_id: "{{ item.0.id | string }}", resource_type: droplet }] }
             status_code: 204
-          loop: "{{ tagged.json.droplets | product(do_extra_tags) | list }}"
+          loop: "{{ tagged.json.droplets | product(box_tags) | list }}"
           loop_control:
             label: "{{ item.0.name }}: {{ item.1 }}"
           when: item.1 not in item.0.tags
           changed_when: true
 
-    - name: Cloud firewall
-      when: do_firewall | bool
+    - name: Monitoring alerts
+      ansible.builtin.include_tasks: tasks/alerts.yml
+
+    # Only edge boxes' addresses go in DNS, never the apps box's. A record that
+    # already points at any edge box is left alone; moving records between edge
+    # boxes is edge_proxy's move-edge.
+    - name: Point the DNS record at the edge box
+      when: manage_dns | bool
+      vars:
+        edge_ips: "{{ groups['edge'] | map('extract', hostvars, 'ansible_host') | list }}"
+        existing: "{{ records.json.domain_records | default([]) }}"
+        # "@" for the zone itself, otherwise the part before the zone.
+        record_name: "{{ '@' if app_domain == dns_zone else app_domain | regex_replace('\\.' ~ (dns_zone | regex_escape) ~ '$', '') }}"
       block:
-        # Applied to the tag, so it covers every droplet carrying it. PUT replaces
-        # the rules wholesale, so changes to ssh_sources take effect on re-run.
-        - name: Cloud firewall rules
-          ansible.builtin.set_fact:
-            firewall:
-              name: "{{ do_tag }}"
-              tags: ["{{ do_tag }}"]
-              inbound_rules:
-                - { protocol: tcp, ports: "22", sources: { addresses: "{{ ssh_sources }}" } }
-                - { protocol: tcp, ports: "80", sources: { addresses: [0.0.0.0/0, "::/0"] } }
-                - { protocol: tcp, ports: "443", sources: { addresses: [0.0.0.0/0, "::/0"] } }
-                # HTTP/3
-                - { protocol: udp, ports: "443", sources: { addresses: [0.0.0.0/0, "::/0"] } }
-              outbound_rules:
-                - { protocol: tcp, ports: "0", destinations: { addresses: [0.0.0.0/0, "::/0"] } }
-                - { protocol: udp, ports: "0", destinations: { addresses: [0.0.0.0/0, "::/0"] } }
-                - { protocol: icmp, destinations: { addresses: [0.0.0.0/0, "::/0"] } }
-
-        - name: List firewalls
+        - name: Look up the DNS record
           ansible.builtin.uri:
-            url: https://api.digitalocean.com/v2/firewalls?per_page=200
+            url: https://api.digitalocean.com/v2/domains/{{ dns_zone }}/records?type=A&name={{ app_domain }}
             headers: "{{ do_headers }}"
-          register: firewalls
+            status_code: [200, 404]
+          register: records
 
-        - name: Create or update the firewall
-          vars:
-            existing: "{{ firewalls.json.firewalls | selectattr('name', 'eq', do_tag) | list }}"
+        - name: Check the domain is on DigitalOcean
+          ansible.builtin.assert:
+            that: records.status == 200
+            fail_msg: >-
+              {{ dns_zone }} isn't a domain on this DigitalOcean account. Add it under
+              Networking → Domains and point your registrar at ns1/ns2/ns3.digitalocean.com.
+            quiet: true
+
+        - name: Check {{ app_domain }} has at most one A record
+          ansible.builtin.assert:
+            that: existing | length <= 1
+            fail_msg: "{{ app_domain }} has several A records. Sort that out by hand first."
+            quiet: true
+
+        - name: Check there's a single edge box to point at
+          ansible.builtin.assert:
+            that: existing | selectattr('data', 'in', edge_ips) | list | length == 1 or edge_ips | length == 1
+            fail_msg: >-
+              {{ app_domain }} is {{ 'missing' if not existing else 'not an edge box address (' ~ existing[0].data ~ ')' }}
+              and there are {{ edge_ips | length }} edge boxes ({{ edge_ips | join(', ') }}), so it's unclear
+              which to use. Point the record at one by hand, or use edge_proxy's repoint.
+            quiet: true
+
+        - name: Point the DNS record at the edge box
           ansible.builtin.uri:
-            url: https://api.digitalocean.com/v2/firewalls{{ ('/' ~ existing[0].id) if existing else '' }}
+            url: https://api.digitalocean.com/v2/domains/{{ dns_zone }}/records{{ ('/' ~ existing[0].id) if existing else '' }}
             method: "{{ 'PUT' if existing else 'POST' }}"
             headers: "{{ do_headers }}"
             body_format: json
-            body: "{{ firewall }}"
-            status_code: [200, 202]
-          changed_when: not existing
-
-    - name: Look up the DNS record
-      ansible.builtin.uri:
-        url: https://api.digitalocean.com/v2/domains/{{ dns_zone }}/records?type=A&name={{ app_domain }}
-        headers: "{{ do_headers }}"
-        status_code: [200, 404]
-      register: records
-
-    - name: Check the domain is on DigitalOcean
-      ansible.builtin.assert:
-        that: records.status == 200
-        fail_msg: >-
-          {{ dns_zone }} isn't a domain on this DigitalOcean account. Add it under
-          Networking → Domains and point your registrar at ns1/ns2/ns3.digitalocean.com.
-        quiet: true
-
-    - name: Point the DNS record at the droplet
-      vars:
-        ip: "{{ hostvars[groups['app'][0]].ansible_host }}"
-        existing: "{{ records.json.domain_records }}"
-        # "@" for the zone itself, otherwise the part before the zone.
-        record_name: "{{ '@' if app_domain == dns_zone else app_domain | regex_replace('\\.' ~ (dns_zone | regex_escape) ~ '$', '') }}"
-      ansible.builtin.uri:
-        url: https://api.digitalocean.com/v2/domains/{{ dns_zone }}/records{{ ('/' ~ existing[0].id) if existing else '' }}
-        method: "{{ 'PUT' if existing else 'POST' }}"
-        headers: "{{ do_headers }}"
-        body_format: json
-        body: { type: A, name: "{{ record_name }}", data: "{{ ip }}", ttl: 300 }
-        status_code: [200, 201]
-      when: not existing or existing[0].data != ip
-      changed_when: true
+            body: { type: A, name: "{{ record_name }}", data: "{{ edge_ips[0] }}", ttl: 300 }
+            status_code: [200, 201]
+          when: not existing or existing[0].data not in edge_ips
+          changed_when: true
 
 - name: Prepare the droplet
   hosts: app
@@ -305,26 +303,34 @@
       ansible.builtin.reboot:
       when: reboot_required.stat.exists
 
-    # https://caddyserver.com/docs/install#debian-ubuntu-raspbian
-    - name: Add the Caddy apt repository
-      ansible.builtin.deb822_repository:
-        name: caddy-stable
-        uris: https://dl.cloudsmith.io/public/caddy/stable/deb/debian
-        suites: any-version
-        components: main
-        signed_by: https://dl.cloudsmith.io/public/caddy/stable/gpg.key
+    - name: Create the swap file
+      ansible.builtin.command: fallocate -l {{ swap_size }} /swapfile
+      args:
+        creates: /swapfile
+      register: swap_file
 
-    - name: Check whether Caddy is installed
-      ansible.builtin.stat:
-        path: /usr/bin/caddy
-      register: caddy_bin
+    - name: Lock down the swap file
+      ansible.builtin.file:
+        path: /swapfile
+        mode: "0600"
 
-    # Only on a new droplet; after that Caddy updates come with the rest above.
-    - name: Install Caddy
-      ansible.builtin.apt:
-        name: caddy
-        update_cache: true
-      when: not caddy_bin.stat.exists
+    - name: Format the swap file
+      ansible.builtin.command: mkswap /swapfile
+      when: swap_file is changed
+
+    - name: Mount swap at boot
+      ansible.builtin.lineinfile:
+        path: /etc/fstab
+        line: /swapfile none swap sw 0 0
+
+    - name: Check whether swap is on
+      ansible.builtin.command: swapon --show=NAME --noheadings
+      register: swap_on
+      changed_when: false
+
+    - name: Turn swap on
+      ansible.builtin.command: swapon /swapfile
+      when: "'/swapfile' not in swap_on.stdout"
 
     - name: Create the service user
       ansible.builtin.user:

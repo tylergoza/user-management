@@ -163,16 +163,25 @@ hand. Follow the comments at the top of `deploy/user-management.service`.
 
 ### DigitalOcean with Ansible
 
-`deploy/ansible/` works like the planner's and puts User Management **on the
-maintenance tracker's droplet**: it finds it by the tracker's tag
-(`maintenance-tracker`) and adds itself alongside, on 127.0.0.1:8100 with its
-own service user (`accounts`), data folder (`/var/lib/user-management`) and
-Caddy site (`/etc/caddy/sites/user-management.caddy`). The main Caddyfile it
-writes is the same as the tracker's and planner's. Provision adds the DNS
-record for `accounts.<dns_zone>` and the service user; it only creates a
-droplet if nothing carries the tag. Deploy runs the tests, builds the Linux
+`deploy/ansible/` puts User Management on an **apps box** (`apps_box`, default
+`apps-1`) in the church DigitalOcean account, shared with the other apps, and
+behind a separate edge box that runs Caddy for every app
+([edge_proxy](../edge_proxy)). The app binds the box's VPC address on port 8100
+(a drop-in sets `ADDR`), with its own service user (`accounts`) and data folder
+(`/var/lib/user-management`). Provision finds the box by tag, creating it only
+if nothing carries the tag, adds the service user, and points the DNS record for
+`accounts.<dns_zone>` at the edge box. Deploy runs the tests, builds the Linux
 binary here, backs up the database when the binary changes (keeping 10),
-installs, and checks `/healthz`.
+installs, checks `/healthz` on the VPC address, then writes the app's Caddy
+site, `/etc/caddy/sites/user-management.caddy`, on every edge box and reloads
+Caddy. It stops before building if there is no edge box.
+
+`with-do-church` runs a command with `DIGITALOCEAN_TOKEN` set for the church
+account. Without it, export the token yourself. Set `do_team` in `vars.yml` to
+the account's team name and every play stops if the token belongs to another
+account. The box needs the `ssh` tag (`do_extra_tags: [ssh]`) for the ssh
+firewall edge_proxy makes; the firewalls and the edge box come from edge_proxy,
+which must be provisioned first.
 
 While there are no users, deploy installs the app but leaves it stopped, so
 `/setup` is never open to the internet: the import below starts it. For a
@@ -181,23 +190,21 @@ deploy creates that user admin instead (`UM_ADMIN_PASSWORD`, or a random one
 printed at the end). Don't do that before importing: an existing `admin` here
 would be left alone by the import, keeping the new password.
 
-Run these from the repo root (`with-do` or any way of setting
-`DIGITALOCEAN_TOKEN`). Rolling out single sign-on, in order:
+Run these from the repo root. Rolling out single sign-on, in order:
 
 ```sh
 cp deploy/ansible/vars.example.yml deploy/ansible/vars.yml   # set dns_zone, tracker_url, planner_url
-export DIGITALOCEAN_TOKEN=...
 
 # 1. DNS record for accounts.<dns_zone>, service user, then a first deploy
-make provision
+with-do-church make provision
 # 2. Later updates
-make deploy
-# 3. Back up every app's database, here and under deploy/ansible/backups/
-make backup
+with-do-church make deploy
+# 3. Back up this app (and see "Moving between hosts" for the rest)
+make backup FROM=<ip or name>
 # 4. Dry run: shows who'd be created and which password is kept
-make import-users                        # add PREFER=tracker|planner to pick
+with-do-church make import-users         # add PREFER=tracker|planner to pick
 # 5. For real: backs up users.db, imports, registers both apps, starts the app
-make import-users DRY_RUN=false
+with-do-church make import-users DRY_RUN=false
 export UM_PLANNER_SECRET=...             # the planner's SSO_CLIENT_SECRET from step 5
 export UM_TRACKER_SECRET=...             # the tracker's
 # 6. Then the planner, then the tracker: set sso_url (https://accounts.<domain>)
@@ -207,21 +214,20 @@ export UM_TRACKER_SECRET=...             # the tracker's
 
 #### Adding the event planner, calendar or directory (and rotating any app's secret)
 
-The event planner (`../event_planning`) runs on 127.0.0.1:8110 as user
-`events` (`/usr/local/bin/event-planner`, `/var/lib/event-planner/events.db`),
-and signs in as client `events`. Set `events_url` in `vars.yml`, then:
+The event planner (`../event_planning`) runs on port 8110 and signs in as
+client `events`. Set `events_url` in `vars.yml`, then:
 
 ```sh
-with-do make register-app APP=events                            # dry run, the event planner
-with-do make register-app APP=events DRY_RUN=false              # register it; secret saved as um-events
-with-do make register-app APP=planner DRY_RUN=false ROTATE=true # new planner secret, saved over um-planner
-with-do make register-app APP=tracker DRY_RUN=false ROTATE=true
-with-do make register-app APP=calendar                          # dry run, the church calendar
-with-do make register-app APP=calendar DRY_RUN=false            # register it; secret saved as um-calendar
-with-do make register-app APP=directory                         # dry run, the member directory
-with-do make register-app APP=directory DRY_RUN=false           # register it; secret saved as um-directory
+with-do-church make register-app APP=events                            # dry run, the event planner
+with-do-church make register-app APP=events DRY_RUN=false              # register it; secret saved as um-events
+with-do-church make register-app APP=planner DRY_RUN=false ROTATE=true # new planner secret, saved over um-planner
+with-do-church make register-app APP=tracker DRY_RUN=false ROTATE=true
+with-do-church make register-app APP=calendar                          # dry run, the church calendar
+with-do-church make register-app APP=calendar DRY_RUN=false            # register it; secret saved as um-calendar
+with-do-church make register-app APP=directory                         # dry run, the member directory
+with-do-church make register-app APP=directory DRY_RUN=false           # register it; secret saved as um-directory
 # then, at once, in the app's repo (../event_planning, ../calendar, ../member_directory, ../production_planning, ../maintenance_tracking):
-with-do with-um make deploy
+with-do-church with-um make deploy
 # (with sso_url https://accounts.<domain> and base_url, its own address, set.)
 ```
 
@@ -233,19 +239,15 @@ run above shows the change and `DRY_RUN=false` updates its roles to helper,
 planner, admin and moves everyone who has `user` to `helper` (an app that is
 already registered keeps its secret).
 
-The church calendar (`../calendar`) runs on 127.0.0.1:8120 as user
-`calendar` (`/usr/local/bin/church-calendar`,
-`/var/lib/church-calendar/calendar.db`), signs in as client `calendar` and
-needs `calendar_url` in `vars.yml`. Its roles are `member`, `scheduler` and
+The church calendar (`../calendar`) runs on port 8120, signs in as client
+`calendar` and needs `calendar_url` in `vars.yml`. Its roles are `member`, `scheduler` and
 `admin`. Everyone with access to the event planner gets the same access to
 the calendar (`copy_access_from: events`): helpers and planners become
 `member`, admins stay `admin`. Then give the office staff `scheduler` on
 their pages here.
 
-The member directory (`../member_directory`) runs on 127.0.0.1:8130 as user
-`directory` (`/usr/local/bin/church-directory`,
-`/var/lib/church-directory/directory.db`), signs in as client `directory`
-and needs `directory_url` in `vars.yml`. Its roles are `member`, `editor`
+The member directory (`../member_directory`) runs on port 8130, signs in as
+client `directory` and needs `directory_url` in `vars.yml`. Its roles are `member`, `editor`
 and `admin`. Like the calendar it copies the event planner's access list
 (`copy_access_from: events`): helpers and planners become `member`, and the
 event planner's admins become directory `admin`, so check the dry run and
@@ -277,11 +279,10 @@ services. Use `KEYCHAIN=other-name`, or `KEYCHAIN=` to print the secret
 instead (also what happens on a non-Mac or if the save fails: save it then, it
 isn't shown again). `ROTATE=true` invalidates the old secret at once, so the
 app can't sign anyone in until it's redeployed with the new one: run
-`with-do with-um make deploy` in its repo straight away.
+`with-do-church with-um make deploy` in its repo straight away.
 
-If a third-party apt repo is down (Caddy's has returned 402), provision
-skips the system updates with a warning and carries on; Caddy is only
-installed from it on a new droplet.
+If a third-party apt repo is down, provision skips the system updates with a
+warning and carries on.
 
 `import-users.yml` copies the tracker's and planner's databases with their
 own `backup` commands into a temporary folder only this app's service user
@@ -291,17 +292,77 @@ real run while Ansible is set to write a log file. Keep them somewhere safe
 (a password manager) and export them before deploying the apps. Running it
 again is safe; apps already registered keep their secrets.
 
-`backup.yml` (all six apps' databases, the calendar and directory included) can be run any time: it skips apps that aren't installed, leaves
-`manual-<time>.db` in each app's backups folder on the droplet, and copies
-them to `deploy/ansible/backups/<time>/` (gitignored; they hold password
-hashes).
+`import-users.yml` runs the tracker's and planner's `backup` commands **on the
+box**, so it only imports from apps installed on the same apps box as User
+Management. An app on another box is skipped with a note, and the play stops if
+neither is here. To import from one on another box, move it onto this box first
+(`make move` in its repo), or copy its database over and run `import-users` by
+hand (see `import-users -h`). `register-app.yml` only touches User Management's
+own database, so the app it registers can be on any box.
 
 ### Moving between hosts
 
-**Settings → Download backup** (or the `backup` command), stop the app on the
-new host, copy the file to its database path
-(`/var/lib/user-management/users.db`, owned by `accounts`), and start it.
-Droplet backups cover all the apps when they share a droplet.
+Backup and restore are separate steps that go through this machine, so they
+work between DigitalOcean accounts and need no network path between the boxes.
+Backups land in `~/Backups/mountainview/user-management/<UTC time>/`
+(`local_backup_dir`; folders 0700, files 0600, outside every repo), holding
+`users.db` and a `manifest.yml` with the source, time, binary checksum and the
+file's sha256. The database is all the app stores: there is no `secrets.key`,
+and sessions, codes and tokens are rows in it (tokens are opaque and stored
+hashed), so there are no signing keys or uploads to carry.
+
+```sh
+# Copy from a box. FROM is an IP (needs only SSH, no token) or a droplet name
+# (looked up in the token's account). The app keeps running.
+make backup FROM=203.0.113.10
+# The final copy: stops the app first and leaves it stopped and disabled.
+make backup FROM=203.0.113.10 STOP=true
+
+# Put a backup on the apps box. Provision first, without starting the app.
+with-do-church make provision RESTORE_PENDING=true
+with-do-church make restore BACKUP=latest      # or BACKUP=<dir>
+```
+
+`RESTORE_PENDING=true` installs the binary and unit but doesn't start the
+app or create an admin, because restore refuses to replace a database and the
+app would make an empty one on first start. Restore checks the manifest's
+checksums, installs the file owned by the service user at mode 0600, removes
+stale `-wal`/`-shm` files, starts the app and waits for `/healthz`. If the box
+already has a database it refuses, unless `FORCE=true`, which first saves
+`pre-restore-<time>.db` in the box's backups folder.
+
+To move to another apps box in the same account, set `apps_box` in `vars.yml`
+to the new box and run `with-do-church make move FROM=apps-1`. It backs up the
+old box and stops the app there, provisions the new one with
+`RESTORE_PENDING=true`, restores, and rewrites the edge site file for the new
+address. DNS isn't touched. `move` refuses when `FROM` is the current
+`apps_box`; pass `FORCE=true` to replace a database already on the new box. The
+old box keeps its data folder as a fallback, and moving back is the same
+command the other way. The other apps reach this one by its public address
+(through the edge box) unless they have an internal address set, so a move
+doesn't break their sign-in.
+
+**Back up every app.** There is no sweep any more: each app has its own
+`make backup` (which also takes its `secrets.key` where it has one), and apps
+may live on different boxes, so a sweep doesn't fit. With all of them on one box:
+
+```sh
+for r in user_management maintenance_tracking production_planning event_planning calendar member_directory; do (cd ../$r && make backup FROM=<box ip or name>) || break; done
+```
+
+`FROM` is the box's IP (no token needed) or its name through `with-do-church`.
+If the apps are on different boxes, run `make backup` in each repo with its own
+`FROM`.
+
+By hand, without Ansible: **Settings → Download backup** (or the `backup`
+command), stop the app on the new host, copy the file to its database path
+(`/var/lib/user-management/users.db`, owned by `accounts`, mode 0600), and
+start it.
+
+**Changing domain.** List the old and new host names as `address_rewrites` in
+`vars.yml`, and each `make restore` swaps them in the database before the app
+starts. It's all or nothing: a failure leaves the database as it was and stops the
+restore. Names not listed are left alone.
 
 ## Tests
 

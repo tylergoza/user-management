@@ -1,0 +1,50 @@
+# Swaps old host names for new ones in a restored database, before the app first
+# starts, so it comes up already pointing at the new addresses. Exact host names
+# only, so anything else on the old domain is left alone. Also drops saved loopback
+# internal addresses, since apps listen on the VPC address. Safe to run again.
+# Needs: address_rewrites, rewrite_columns, rewrite_sqlite.
+- name: Check the rewrites are plain host names
+  ansible.builtin.assert:
+    that:
+      - item.from is match('^[a-z0-9.-]+$')
+      - item.to is match('^[a-z0-9.-]+$')
+    fail_msg: "address_rewrites takes host names only, e.g. { from: a.example.org, to: a.example.net }. Got {{ item }}."
+    quiet: true
+  loop: "{{ address_rewrites }}"
+
+# A backup from an older version may not have every column yet, and a column it
+# doesn't have holds nothing to change.
+- name: See which columns this database has
+  ansible.builtin.command:
+    argv: "{{ rewrite_sqlite + [app_db, \"SELECT count(*) FROM pragma_table_info('\" ~ item.table ~ \"') WHERE name = '\" ~ item.column ~ \"'\"] }}"
+  loop: "{{ rewrite_columns }}"
+  loop_control:
+    label: "{{ item.table }}.{{ item.column }}"
+  register: column_checks
+  changed_when: false
+
+- name: Rewrite the addresses
+  vars:
+    present: "{{ column_checks.results | selectattr('stdout', 'eq', '1') | map(attribute='item') | list }}"
+    rewrite_sql: |
+      BEGIN;
+      {% for c in present %}
+      {% for r in address_rewrites %}
+      UPDATE {{ c.table }} SET {{ c.column }} = replace({{ c.column }}, '{{ r.from }}', '{{ r.to }}') WHERE instr({{ c.column }}, '{{ r.from }}') > 0;
+      {% endfor %}
+      {% endfor %}
+      DELETE FROM settings WHERE key IN ('sso_internal_url', 'sso_pending_internal_url', 'calendar_internal_url')
+        AND (value LIKE 'http://127.0.0.1%' OR value LIKE 'http://localhost%');
+      COMMIT;
+      SELECT total_changes();
+  # On stdin, not as an argument: given as an argument, sqlite3 carries on past a
+  # failed statement and runs the COMMIT, so half a rewrite would stick.
+  ansible.builtin.command:
+    argv: "{{ rewrite_sqlite + ['-bail', app_db] }}"
+    stdin: "{{ rewrite_sql }}"
+  register: rewritten
+  changed_when: rewritten.stdout | trim != '0'
+
+- name: Say what changed
+  ansible.builtin.debug:
+    msg: "Rewrote {{ rewritten.stdout | trim }} saved address(es) in {{ app_db }}."

@@ -1,10 +1,7 @@
-# Adds every droplet tagged do_tag to the "app" group for the plays that follow.
-- name: Check the API token is set
-  ansible.builtin.assert:
-    that: do_token | length > 0
-    fail_msg: Set DIGITALOCEAN_TOKEN to a DigitalOcean API token with read/write scope.
-    quiet: true
-
+# Adds every droplet tagged do_tag to the "app" group and every one tagged
+# edge_tag to the "edge" group for the plays that follow. Each gets its VPC
+# address as private_ip, which is where the app listens and the edge box proxies.
+# Needs the token checked first (tasks/check_account.yml).
 - name: Look up droplets tagged {{ do_tag }}
   ansible.builtin.uri:
     url: https://api.digitalocean.com/v2/droplets?tag_name={{ do_tag }}&per_page=200
@@ -16,15 +13,31 @@
     name: "{{ item.name }}"
     groups: app
     ansible_host: "{{ (item.networks.v4 | selectattr('type', 'eq', 'public') | first).ip_address }}"
+    private_ip: "{{ item.networks.v4 | selectattr('type', 'eq', 'private') | map(attribute='ip_address') | first | default('') }}"
     ansible_user: root
     ansible_ssh_private_key_file: "{{ (ssh_private_key_file | expanduser) if ssh_private_key_file else omit }}"
-    # A new droplet has a host key we've never seen; trust it the first time.
-    # With a deploy key, offer only that one, not every key in the agent.
-    ansible_ssh_common_args: >-
-      -o StrictHostKeyChecking=accept-new
-      {{- ' -o IdentitiesOnly=yes' if ssh_private_key_file else '' }}
-      {{- (' -o IdentityAgent=' ~ ssh_identity_agent) if ssh_identity_agent else '' }}
+    ansible_ssh_common_args: "{{ root_ssh_args }}"
   loop: "{{ tagged.json.droplets }}"
+  loop_control:
+    label: "{{ item.name }}"
+  changed_when: false
+
+- name: Look up droplets tagged {{ edge_tag }}
+  ansible.builtin.uri:
+    url: https://api.digitalocean.com/v2/droplets?tag_name={{ edge_tag }}&per_page=200
+    headers: "{{ do_headers }}"
+  register: tagged_edge
+
+- name: Add them to the edge group
+  ansible.builtin.add_host:
+    name: "{{ item.name }}"
+    groups: edge
+    ansible_host: "{{ (item.networks.v4 | selectattr('type', 'eq', 'public') | first).ip_address }}"
+    private_ip: "{{ item.networks.v4 | selectattr('type', 'eq', 'private') | map(attribute='ip_address') | first | default('') }}"
+    ansible_user: root
+    ansible_ssh_private_key_file: "{{ (ssh_private_key_file | expanduser) if ssh_private_key_file else omit }}"
+    ansible_ssh_common_args: "{{ root_ssh_args }}"
+  loop: "{{ tagged_edge.json.droplets }}"
   loop_control:
     label: "{{ item.name }}"
   changed_when: false

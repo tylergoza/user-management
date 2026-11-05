@@ -1,128 +1,136 @@
-# Backs up every app's database on the shared droplet (User Management, the
-# production planner, the maintenance tracker, the event planner, the church
-# calendar and the member directory, whichever are installed) with each app's
-# own `backup` command, then copies them to this machine. Only the databases:
-# the directory's photos/ and each app's secrets.key are backed up by the
-# app's own deploy (see its README).
+# Copies the database from a box to this machine, with a manifest
+# of checksums, outside every repo. The app's own backup command makes a
+# consistent snapshot, so nothing is lost from the -wal file. FROM can be an IP
+# (needs only SSH, no token) or a droplet name (looked up in the token's account).
 #
-#   export DIGITALOCEAN_TOKEN=...
-#   ansible-playbook backup.yml
+#   make backup FROM=203.0.113.10                 # the app keeps running
+#   make backup FROM=203.0.113.10 STOP=true       # final copy: the app is stopped first and stays off
 #
-# On the droplet: <app data dir>/backups/manual-<time>.db (kept until you
-# remove them; deploys only prune their pre-deploy-*.db).
-# Here: deploy/ansible/backups/<time>/<app>.db (gitignored). They hold
-# password hashes, so keep them somewhere safe.
+# Everything the app keeps is users.db. There is no secrets.key, and sessions,
+# codes and tokens are rows in the database (opaque and stored hashed), so there
+# are no signing keys to carry either. It stores nothing else on disk.
+#
+# Backs up this app only. To back up every church app, see the README.
 
-- name: Find the droplet
+- name: Pick the source box
   hosts: localhost
   gather_facts: false
   vars_files: [defaults.yml, vars.yml]
   tasks:
-    - name: Find the droplets
-      ansible.builtin.include_tasks: tasks/find_droplets.yml
-
-    - name: Check there's something to back up
+    - name: Check from is set
       ansible.builtin.assert:
-        that: groups['app'] | default([]) | length > 0
-        fail_msg: No droplets are tagged {{ do_tag }}.
+        that: from is defined and from | length > 0
+        fail_msg: Say which box, e.g. make backup FROM=203.0.113.10
         quiet: true
 
-    # Once, so every file from this run has the same name.
-    - name: Pick the backup name
-      ansible.builtin.set_fact:
-        backup_stamp: "{{ now(utc=true, fmt='%Y%m%dT%H%M%SZ') }}"
+    # An IP needs no token at all.
+    - name: Check the account
+      ansible.builtin.include_tasks: tasks/check_account.yml
+      when: from is not match('^[0-9]{1,3}(\.[0-9]{1,3}){3}$')
 
-- name: Back up
-  hosts: app
+    - name: Find the source box
+      ansible.builtin.include_tasks: tasks/find_source.yml
+
+    - name: Choose the backup folder
+      ansible.builtin.set_fact:
+        backup_time: "{{ now(utc=true, fmt='%Y%m%dT%H%M%SZ') }}"
+        backup_dir: "{{ local_backup_dir | expanduser }}/user-management/{{ now(utc=true, fmt='%Y%m%dT%H%M%SZ') }}"
+
+    - name: Create it
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0700"
+      loop:
+        - "{{ local_backup_dir | expanduser }}"
+        - "{{ local_backup_dir | expanduser }}/user-management"
+        - "{{ backup_dir }}"
+
+- name: Copy the data
+  hosts: source
   gather_facts: false
   vars_files: [defaults.yml, vars.yml]
   vars:
-    stamp: "{{ hostvars['localhost'].backup_stamp }}"
-    local_dir: "{{ playbook_dir }}/backups/{{ stamp }}{{ ('/' ~ inventory_hostname) if groups['app'] | length > 1 else '' }}"
-    apps:
-      - { name: user-management, user: "{{ app_user }}", bin: "{{ app_bin }}", db: "{{ app_db }}", dir: "{{ app_backup_dir }}" }
-      - { name: production-planner, user: "{{ planner_user }}", bin: "{{ planner_bin }}", db: "{{ planner_db }}", dir: "{{ planner_backup_dir }}" }
-      - { name: maintenance-tracker, user: "{{ tracker_user }}", bin: "{{ tracker_bin }}", db: "{{ tracker_db }}", dir: "{{ tracker_backup_dir }}" }
-      - { name: event-planner, user: "{{ events_user }}", bin: "{{ events_bin }}", db: "{{ events_db }}", dir: "{{ events_backup_dir }}" }
-      - { name: church-calendar, user: "{{ calendar_user }}", bin: "{{ calendar_bin }}", db: "{{ calendar_db }}", dir: "{{ calendar_backup_dir }}" }
-      - { name: church-directory, user: "{{ directory_user }}", bin: "{{ directory_bin }}", db: "{{ directory_db }}", dir: "{{ directory_backup_dir }}" }
+    backup_dir: "{{ hostvars.localhost.backup_dir }}"
+    snapshot: "{{ app_backup_dir }}/export-{{ hostvars.localhost.backup_time }}.db"
+    um: [runuser, -u, "{{ app_user }}", --, "{{ app_bin }}", -db, "{{ app_db }}"]
   tasks:
-    - name: Look for each app's binary
+    - name: Check the app is installed
       ansible.builtin.stat:
-        path: "{{ item.bin }}"
-      loop: "{{ apps }}"
-      loop_control:
-        label: "{{ item.name }}"
-      register: bins
+        path: "{{ app_bin }}"
+        checksum_algorithm: sha256
+      register: binary
+      failed_when: not binary.stat.exists
 
-    - name: Look for each app's database
+    - name: Check there's a database
       ansible.builtin.stat:
-        path: "{{ item.db }}"
-      loop: "{{ apps }}"
-      loop_control:
-        label: "{{ item.name }}"
-      register: dbs
+        path: "{{ app_db }}"
+      register: db
+      failed_when: not db.stat.exists
 
-    - name: Note the apps that aren't installed
-      ansible.builtin.debug:
-        msg: >-
-          Skipping {{ item.name }}: {{ item.bin if not bins.results[i].stat.exists else item.db }}
-          isn't on {{ inventory_hostname }}, so it isn't installed (or hasn't started yet).
-      loop: "{{ apps }}"
-      loop_control:
-        label: "{{ item.name }}"
-        index_var: i
-      when: not (bins.results[i].stat.exists and dbs.results[i].stat.exists)
+    # Stopped before the snapshot, not after: a write between the two would be
+    # in neither the copy nor anything else.
+    - name: Stop the app
+      ansible.builtin.systemd_service:
+        name: user-management
+        state: stopped
+      when: stop | default(false) | bool
 
-    - name: Create the backup folders
+    - name: Snapshot and fetch
+      block:
+        - name: Make a snapshot with the app's backup command
+          ansible.builtin.command:
+            argv: "{{ um + ['backup', snapshot] }}"
+          changed_when: true
+
+        - name: Fetch the database
+          ansible.builtin.fetch:
+            src: "{{ snapshot }}"
+            dest: "{{ backup_dir }}/users.db"
+            flat: true
+      always:
+        - name: Delete the snapshot on the box
+          ansible.builtin.file:
+            path: "{{ snapshot }}"
+            state: absent
+
+    - name: Lock down the local copies
       ansible.builtin.file:
-        path: "{{ item.dir }}"
-        state: directory
-        owner: "{{ item.user }}"
-        group: "{{ item.user }}"
-        mode: "0750"
-      loop: "{{ apps }}"
-      loop_control:
-        label: "{{ item.name }}"
-        index_var: i
-      when: bins.results[i].stat.exists and dbs.results[i].stat.exists
-
-    # As each app's own user (runuser: Ubuntu 26.04's sudo is sudo-rs), so the
-    # database's -wal/-shm files stay that user's.
-    - name: Back up each database
-      ansible.builtin.command:
-        argv: [runuser, -u, "{{ item.user }}", --, "{{ item.bin }}", -db, "{{ item.db }}", backup, "{{ item.dir }}/manual-{{ stamp }}.db"]
-      loop: "{{ apps }}"
-      loop_control:
-        label: "{{ item.name }}"
-        index_var: i
-      when: bins.results[i].stat.exists and dbs.results[i].stat.exists
-      changed_when: true
-
-    - name: Copy them here
-      ansible.builtin.fetch:
-        src: "{{ item.dir }}/manual-{{ stamp }}.db"
-        dest: "{{ local_dir }}/{{ item.name }}.db"
-        flat: true
-      loop: "{{ apps }}"
-      loop_control:
-        label: "{{ item.name }}"
-        index_var: i
-      when: bins.results[i].stat.exists and dbs.results[i].stat.exists
-
-    - name: Keep the copies private
-      ansible.builtin.file:
-        path: "{{ playbook_dir }}/backups/{{ stamp }}"
-        state: directory
-        mode: "0700"
-        recurse: false
+        path: "{{ backup_dir }}/{{ item }}"
+        mode: "0600"
+      loop: [users.db]
       delegate_to: localhost
-      run_once: true
 
-    - name: Done
+    - name: Checksum them
+      ansible.builtin.stat:
+        path: "{{ backup_dir }}/{{ item }}"
+        checksum_algorithm: sha256
+      loop: [users.db]
+      delegate_to: localhost
+      register: sums
+
+    - name: Write the manifest
+      ansible.builtin.copy:
+        content: "{{ manifest | to_nice_yaml }}"
+        dest: "{{ backup_dir }}/manifest.yml"
+        mode: "0600"
       vars:
-        done: "{{ apps | zip(bins.results, dbs.results) | selectattr('1.stat.exists') | selectattr('2.stat.exists') | map(attribute='0.name') | list }}"
+        manifest:
+          app: user-management
+          source: "{{ from }}"
+          time: "{{ hostvars.localhost.backup_time }}"
+          binary_sha256: "{{ binary.stat.checksum }}"
+          files: "{{ dict(sums.results | map(attribute='item') | zip(sums.results | map(attribute='stat') | map(attribute='checksum'))) }}"
+      delegate_to: localhost
+
+    # After the copy is safe on this machine.
+    - name: Keep the app off
+      ansible.builtin.systemd_service:
+        name: user-management
+        enabled: false
+        state: stopped
+      when: stop | default(false) | bool
+
+    - name: Say where it went
       ansible.builtin.debug:
-        msg: >-
-          {{ ('Backed up ' ~ done | join(', ') ~ ' to manual-' ~ stamp ~ ".db in each app's backups folder, and copied them to " ~ local_dir ~ '.')
-          if done else 'No apps are installed on ' ~ inventory_hostname ~ ', so there was nothing to back up.' }}
+        msg: "Saved to {{ backup_dir }}{{ '. The app is stopped and disabled on ' ~ from if stop | default(false) | bool else '' }}"
