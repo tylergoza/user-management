@@ -5,14 +5,19 @@
 # never lands in a file.
 do_token: "{{ lookup('env', 'DIGITALOCEAN_TOKEN') }}"
 
+# DigitalOcean team (as shown on the account) the token must belong to, so a
+# run can't touch the wrong account by mistake. Empty skips the check; set the
+# real name in vars.yml.
+do_team: ""
+
+# The apps box this app lives on. Several apps can share one: the first one
+# provisioned creates the box, the rest find it by tag and add their own user,
+# data folder and unit. Moving the app to another box is `make move`.
+apps_box: apps-1
 # Droplet. `doctl compute size list` / `region list` / `image list-distribution`
 # show the choices. nyc3 is New York 3; s-1vcpu-1gb is the $6/month Basic
 # droplet, which is plenty for this app.
-# User Management shares the maintenance tracker's droplet: it finds it by
-# the tracker's tag and adds itself alongside (port 8100, its own service
-# user, data folder and Caddy site), like the production planner. The apps
-# reach it on 127.0.0.1:8100 for their server-to-server calls.
-droplet_name: maintenance-tracker
+droplet_name: "{{ apps_box }}"
 do_region: nyc3
 do_size: s-1vcpu-1gb
 do_image: ubuntu-26-04-x64
@@ -23,14 +28,35 @@ do_monitoring: true
 # Project (as named in the control panel) to put the droplet in. Empty means
 # the account's default project.
 do_project: ""
-# Droplets, firewall and deploys all find each other by this tag.
-do_tag: maintenance-tracker
-# More tags for the droplet, e.g. ones your own cloud firewalls target.
+# Droplets and deploys find each other by this tag.
+do_tag: "{{ apps_box }}"
+# Every apps box carries this tag too (the apps-internal firewall and the
+# monitoring alerts use it), and the edge box carries edge_tag.
+do_role_tag: apps
+edge_tag: edge
+# More tags for the droplet, e.g. ssh for the ssh firewall edge_proxy manages.
 # Added to existing droplets too on the next provision.
 do_extra_tags: []
-# Create a cloud firewall (named do_tag) that allows only SSH, HTTP and HTTPS.
-# Turn off if your own firewalls cover the droplet through do_extra_tags.
-do_firewall: true
+
+# Provision points app_domain's A record at the edge box. Turn off to leave
+# DNS alone.
+manage_dns: true
+# Monitoring alerts on every apps box, sent to the account's email address.
+alert_percent: 80
+# Swap file on the droplet.
+swap_size: 1G
+
+# Where the app listens on the box, on its VPC address (the drop-in sets
+# ADDR). The edge box proxies to it, and the other apps reach it there for
+# their server-to-server calls (or through the edge box, by public address).
+app_port: 8100
+
+# Set by `make provision RESTORE_PENDING=true`: install the binary and unit but
+# don't start the app or create an admin, so `make restore` finds no database.
+restore_pending: false
+# Backups from `make backup` (the database, so private) go here, outside
+# every repo.
+local_backup_dir: ~/Backups/mountainview
 
 # Key Ansible connects with. Empty means your normal ssh setup (agent,
 # ~/.ssh/config). Set it to use a dedicated deploy key, e.g. when your usual
@@ -46,8 +72,6 @@ ssh_public_key_file: "{{ (ssh_private_key_file ~ '.pub') if ssh_private_key_file
 # More public key files to let in as root, e.g. your hardware-token keys when
 # Ansible uses a deploy key. Added on every provision; never removed.
 ssh_authorized_keys: []
-# Who may reach port 22. Narrow this to your own address if it's stable.
-ssh_sources: [0.0.0.0/0, "::/0"]
 
 # Public address: accounts.<dns_zone> unless vars.yml says otherwise.
 app_domain: "accounts.{{ dns_zone }}"
@@ -68,7 +92,7 @@ admin_username: ""
 admin_password: "{{ lookup('env', 'UM_ADMIN_PASSWORD') }}"
 
 # Deploys back up the database before installing a changed binary, and keep
-# this many of those backups.
+# this many of those backups. users.db is all the app stores (no secrets.key).
 keep_backups: 10
 # `make test` runs before every build; -e skip_tests=true skips it.
 skip_tests: false
@@ -80,28 +104,15 @@ app_data_dir: /var/lib/user-management
 app_db: "{{ app_data_dir }}/users.db"
 app_backup_dir: "{{ app_data_dir }}/backups"
 
-# The sibling apps on the same droplet, for backup.yml and import-users.yml.
-# These match their deploy/*.service files.
+# The tracker and planner, for import-users.yml, which runs their `backup`
+# commands on this box, so they must share it. These match their
+# deploy/*.service files.
 tracker_user: maintenance
 tracker_bin: /usr/local/bin/maintenance-tracker
 tracker_db: /var/lib/maintenance-tracker/maintenance.db
-tracker_backup_dir: /var/lib/maintenance-tracker/backups
 planner_user: planner
 planner_bin: /usr/local/bin/production-planner
 planner_db: /var/lib/production-planner/productions.db
-planner_backup_dir: /var/lib/production-planner/backups
-events_user: events
-events_bin: /usr/local/bin/event-planner
-events_db: /var/lib/event-planner/events.db
-events_backup_dir: /var/lib/event-planner/backups
-calendar_user: calendar
-calendar_bin: /usr/local/bin/church-calendar
-calendar_db: /var/lib/church-calendar/calendar.db
-calendar_backup_dir: /var/lib/church-calendar/backups
-directory_user: directory
-directory_bin: /usr/local/bin/church-directory
-directory_db: /var/lib/church-directory/directory.db
-directory_backup_dir: /var/lib/church-directory/backups
 
 # import-users.yml: the apps' public https addresses. They're registered here
 # with redirect URI <url>/auth/callback. Only needed while an app isn't
@@ -185,3 +196,19 @@ dry_run: true
 do_headers:
   Authorization: "Bearer {{ do_token }}"
   Content-Type: application/json
+# ssh options for every box this repo connects to as root. A new droplet has a
+# host key we've never seen; trust it the first time. With a deploy key, offer
+# only that one, not every key in the agent.
+root_ssh_args: >-
+  -o StrictHostKeyChecking=accept-new
+  {{- ' -o IdentitiesOnly=yes' if ssh_private_key_file else '' }}
+  {{- (' -o IdentityAgent=' ~ ssh_identity_agent) if ssh_identity_agent else '' }}
+
+# Host names a restore swaps in the database before the app starts, e.g. after
+# changing domain: [{ from: a.example.org, to: a.example.net }]. Exact names only.
+address_rewrites: []
+# Where this app saves addresses.
+rewrite_columns:
+  - { table: settings, column: value }
+  - { table: apps, column: base_url }
+  - { table: apps, column: redirect_uris }

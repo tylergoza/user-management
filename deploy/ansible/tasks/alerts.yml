@@ -1,0 +1,32 @@
+# Alerts on every droplet tagged do_role_tag, found by description so another
+# app on the same box doesn't make a second set.
+- name: List monitoring alerts
+  ansible.builtin.uri:
+    url: https://api.digitalocean.com/v2/monitoring/alerts?per_page=200
+    headers: "{{ do_headers }}"
+  register: alert_policies
+
+- name: Create missing alerts
+  ansible.builtin.uri:
+    url: https://api.digitalocean.com/v2/monitoring/alerts
+    method: POST
+    headers: "{{ do_headers }}"
+    body_format: json
+    body:
+      alerts: { email: ["{{ do_account.json.account.email }}"], slack: [] }
+      compare: GreaterThan
+      description: "{{ item.description }}"
+      enabled: true
+      entities: []
+      tags: ["{{ do_role_tag }}"]
+      type: "{{ item.type }}"
+      value: "{{ alert_percent | int }}"
+      window: 5m
+    status_code: [200, 201]
+  changed_when: true
+  loop:
+    - { description: "{{ do_role_tag }} memory", type: v1/insights/droplet/memory_utilization_percent }
+    - { description: "{{ do_role_tag }} disk", type: v1/insights/droplet/disk_utilization_percent }
+  loop_control:
+    label: "{{ item.description }}"
+  when: item.description not in (alert_policies.json.policies | map(attribute='description'))

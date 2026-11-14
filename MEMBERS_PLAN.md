@@ -5,7 +5,16 @@ Management's part. The endpoint names and shapes in that file are the
 contract: other apps are planning against them. Everything here is optional
 for the other apps: nothing changes for an app that doesn't opt in.
 
-Status: planned 2026-10-16, not built.
+Status: planned 2026-10-16. **Partly built 2026-11-14:** the confidential-app
+delegation (per-app tokens for an app that has a client secret, first used by
+the MCP server, client ID `mcp`; see `../.claude/plans/mcp-server.md` phase 1)
+and default roles are built, in `002_delegation.sql`. The acting app calls
+`me/apps` and `delegate` with its Basic auth plus `X-Grant` (its own grant for
+the person), instead of the bare browser grant described below. The
+public/browser parts remain: public redirect URIs and grants, the public
+`/token` path, CORS, the 8-hour idle, `requireBrowserGrant`, and the docs. They
+go in a later migration (`003_…`) and plug into `actingGrant`
+(`internal/server/delegation.go`), which is the one place the grant is read.
 
 `001_initial.sql` is frozen: User Management is live at
 `accounts.mountainviewbaptist.cloud` (PLAN.md, rolled out 2026-10-10) and
@@ -29,23 +38,28 @@ TABLE` need no table rebuild, so the `noForeignKeys` flag
 
 ## Steps
 
-### 1. Migration `002_members.sql`
-- [ ] `apps`: add `public_redirect_uris TEXT NOT NULL DEFAULT ''` (one per line, like `redirect_uris`), `acts_in TEXT NOT NULL DEFAULT ''` ("May act for users in": client IDs, comma separated), `accepts_from TEXT NOT NULL DEFAULT ''` ("Accepts tokens from": client IDs), `default_role TEXT NOT NULL DEFAULT ''` (empty means no default)
+### 1. Migration `002_members.sql` (built as `002_delegation.sql`; the public columns go in `003_…`)
+- [x] `apps`: add `acts_in TEXT NOT NULL DEFAULT ''` ("May act for users in": client IDs, comma separated), `accepts_from TEXT NOT NULL DEFAULT ''` ("Accepts tokens from": client IDs), `default_role TEXT NOT NULL DEFAULT ''` (empty means no default)
+- [ ] `apps`: add `public_redirect_uris TEXT NOT NULL DEFAULT ''` (one per line, like `redirect_uris`)
 - [ ] `grants`: add `public INTEGER NOT NULL DEFAULT 0` (1 for a grant made by a public redirect URI). Existing grants stay 0
-- [ ] New table `delegated_tokens (token_hash TEXT PRIMARY KEY, grant_hash TEXT NOT NULL REFERENCES grants(id_hash) ON DELETE CASCADE, audience_app_id INTEGER NOT NULL REFERENCES apps(id) ON DELETE CASCADE, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, expires_at TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')))` plus an index on `grant_hash`. Deleting the session deletes its grants (`grants.session_id` cascades), which deletes the tokens: that is how a token dies with sign-out
+- [x] New table `delegated_tokens (token_hash TEXT PRIMARY KEY, grant_hash TEXT NOT NULL REFERENCES grants(id_hash) ON DELETE CASCADE, audience_app_id INTEGER NOT NULL REFERENCES apps(id) ON DELETE CASCADE, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, expires_at TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')))` plus an index on `grant_hash`. Deleting the session deletes its grants (`grants.session_id` cascades), which deletes the tokens: that is how a token dies with sign-out
 - [ ] `auth_codes`: add `public INTEGER NOT NULL DEFAULT 0`, so `/token` knows which kind of redirect URI the code was issued for
-- [ ] Why columns for the two lists: `roles` and `redirect_uris` already work this way, client IDs can't change, and a stale ID in a list matches nothing
-- [ ] Test in `internal/store/store_test.go`: run 001 only (`openAt(path, 1)`) on a copy holding sample apps, users, grants and codes, then 002; old rows keep working and the new columns have their defaults
+- [x] Why columns for the two lists: `roles` and `redirect_uris` already work this way, client IDs can't change, and a stale ID in a list matches nothing
+- [x] Test in `internal/store/store_test.go` (`TestMigration002`): run 001 only (`openAt(path, 1)`) on a copy holding sample apps, users, grants and codes, then 002; old rows keep working and the new columns have their defaults
 
 ### 2. Apps: store and the Apps page
-- [ ] `store.App` (`internal/store/apps.go`): add `PublicRedirectURIs`, `ActsIn`, `AcceptsFrom` (`[]string`) and `DefaultRole`; extend `appCols`, `scanApp`, `CreateApp`, `UpdateApp`
+- [x] `store.App` (`internal/store/apps.go`): add `ActsIn`, `AcceptsFrom` (`[]string`) and `DefaultRole`; extend `appCols`, `scanApp`, `CreateApp`, `UpdateApp`. Plus `App.MayActIn(audience)` (both opt-ins) and `SetAppDelegation`
+- [ ] `store.App`: add `PublicRedirectURIs`
 - [ ] `App.RedirectAllowed` stays "exact match in `RedirectURIs` or `PublicRedirectURIs`"; add `App.PublicRedirect(uri)` for the public list only. A URI can't be in both lists
-- [ ] `appForm` / `readAppForm` / `validate` (`internal/server/handlers_apps.go`): fields for the three lists and `default_role`. Rules: a public URI must be `https` (or `http://localhost` for development), no `#`, no wildcard; `acts_in` / `accepts_from` entries must be existing client IDs other than the app itself; `default_role` must be one of `Roles` and may not be `admin`
-- [ ] `appChanges` writes the new fields to the audit log (`app.update`), so a user admin can see who opened a door
-- [ ] Apps page templates (`web/templates/pages/`, the app form): a "Browser sign-in (public)" box for the public URIs, "May act for users in" and "Accepts tokens from" as checkbox lists of the other registered apps, and a "New users get role" select with a "no default" choice. Each box has one line of help text
+- [x] `appForm` / `readAppForm` / `validate` (`internal/server/handlers_apps.go`): `acts_in`, `accepts_from` and `default_role`, with these rules: `acts_in` / `accepts_from` entries must be existing client IDs other than the app itself; `default_role` must be one of `Roles` and may not be `admin`
+- [ ] The same for public URIs: a public URI must be `https` (or `http://localhost` for development), no `#`, no wildcard; `acts_in` / `accepts_from` entries must be existing client IDs other than the app itself; `default_role` must be one of `Roles` and may not be `admin`
+- [x] `appChanges` writes the new fields to the audit log (`app.update`), so a user admin can see who opened a door
+- [x] Apps page templates (`web/templates/pages/`, the app form): "May act for users in" and "Accepts tokens from" as checkbox lists of the other registered apps, and a "New users get role" select with a "no default" choice. Each box has one line of help text
+- [ ] A "Browser sign-in (public)" box for the public URIs
 - [ ] `Server.cspHeader` already lists the origin of every redirect URI in `form-action`; make it read `PublicRedirectURIs` too, since the sign-in form redirects to the website
-- [ ] `registerapp` (`internal/registerapp/registerapp.go`): `--public-redirect-uri` (repeatable), `--acts-in`, `--accepts-from`, `--default-role` flags, and the same checks. `changeRoles` / `store.ChangeAppRoles` keep `default_role` valid: a rename updates it; removing the default role is refused with a clear message
-- [ ] Tests: form validation for each rule above; round trip through `registerapp` including a dry run
+- [x] `registerapp` (`internal/registerapp/registerapp.go`): `--acts-in`, `--accepts-from`, `--default-role` flags, and the same checks. `changeRoles` / `store.ChangeAppRoles` keep `default_role` valid: a rename updates it; removing the default role is refused with a clear message (unless `--default-role` changes it in the same run: `ChangeAppRoles` takes an optional new default)
+- [ ] `registerapp --public-redirect-uri` (repeatable)
+- [x] Tests: form validation for each delegation rule above; round trip through `registerapp` including a dry run (public URI rules still to do)
 
 ### 3. Browser sign-in: public redirect URIs
 - [ ] `handleAuthorize` (`internal/server/sso.go`): accept a `redirect_uri` found in `PublicRedirectURIs`; carry `public` into `CreateAuthCode` (`internal/store/sso.go`, `AuthCode.Public`). Everything else (state, S256 challenge, the `no_access` page) stays as is. PKCE is already required for every app
@@ -72,44 +86,47 @@ TABLE` need no table rebuild, so the `noForeignKeys` flag
 
 ### 6. `GET /api/v1/me/apps`
 - [ ] New auth wrapper `requireBrowserGrant` (`internal/server/api.go`): reads `X-Grant`, no Basic auth, looks the grant up without an app ID (new `store.CheckBrowserGrant(grantID, ttl)`), requires `public = 1`, the session alive, the user not disabled, and the app's access unsuspended. Errors are the usual JSON: 401 `invalid_grant`. `Cache-Control: no-store`
-- [ ] `store.DelegableApps(grantAppID, userID)`: the apps the person has an unsuspended role in, where the grant's app lists the app in `ActsIn` **and** the app lists the grant's app in `AcceptsFrom`. The grant's own app is left out
-- [ ] Response: `{"apps": [{"audience": "calendar", "name": "Church Calendar", "role": "member", "url": "https://calendar.<zone>"}]}`. `audience` is the client ID; `url` is `base_url` (so the website can build its `connect-src` list and links)
-- [ ] Tests: the list holds only apps with a role and both opt-ins; an app missing either list is left out; a suspended role is left out; a confidential grant is refused
+- [x] `store.DelegableApps(grantAppID, userID)`: the apps the person has an unsuspended role in, where the grant's app lists the app in `ActsIn` **and** the app lists the grant's app in `AcceptsFrom`. The grant's own app is left out
+- [x] Response: `{"apps": [{"audience": "calendar", "name": "Church Calendar", "role": "member", "url": "https://calendar.<zone>"}]}`. `audience` is the client ID; `url` is `base_url` (so the website can build its `connect-src` list and links)
+- [x] Built for confidential apps: `GET /api/v1/me/apps` behind `requireClient` plus `X-Grant` (the caller's own grant, `CheckGrant`), 401 `invalid_grant` otherwise
+- [x] Tests (`TestMeApps`): the list holds only apps with a role and both opt-ins; an app missing either list is left out; a suspended role is left out
+- [ ] Test: a confidential grant is refused on the browser path
 
 ### 7. `POST /api/v1/delegate`
-- [ ] Handler `apiDelegate`: `requireBrowserGrant`, JSON `{"audience": "calendar"}` (64 KB body limit). Checks in this order: audience exists (404 `unknown_audience`); the grant's app has it in `ActsIn` and it has the grant's app in `AcceptsFrom` (403 `not_accepted`); the person has an unsuspended role there (403 `no_access`)
-- [ ] `store.CreateDelegatedToken(grantHash, audienceAppID, userID)`: `umd_` + `RandomToken()`, stored hashed with `HashToken`, expires in `delegatedTTL = 15 * time.Minute`. Return the token and the role
-- [ ] Response `{"token": "umd_…", "expires_in": 900, "role": "member"}`. No refresh token: the website asks again near expiry, and that also re-checks idle time and access
-- [ ] Audit event `token.delegate` (actor, app = audience, detail `via website`). Not one row per call if that would flood the log: log it at most once per grant and audience per hour
-- [ ] `PurgeExpired` (`internal/store/sessions.go`) also deletes expired `delegated_tokens`
-- [ ] Tests: a good token for the right app; 403 `no_access` for a person with no role there; 403 `not_accepted` when either list is missing; unknown audience; expired and idle grants refused; the token is stored hashed
+- [x] Handler `apiDelegate` (`internal/server/delegation.go`): for now `requireClient` plus `X-Grant` (`actingGrant`, 401 `invalid_grant`; the browser path adds `requireBrowserGrant` later), JSON `{"audience": "calendar"}` (64 KB body limit). Checks in this order: audience exists (404 `unknown_audience`); the grant's app has it in `ActsIn` and it has the grant's app in `AcceptsFrom` (403 `not_accepted`); the person has an unsuspended role there (403 `no_access`)
+- [x] `store.CreateDelegatedToken(grantID, audienceAppID, userID)` (takes the grant ID and hashes it): `umd_` + `RandomToken()`, stored hashed with `HashToken`, expires in `delegatedTTL = 15 * time.Minute`. Return the token and the role
+- [x] Response `{"token": "umd_…", "expires_in": 900, "role": "member"}`. No refresh token: the website asks again near expiry, and that also re-checks idle time and access
+- [x] Audit event `token.delegate` (actor, app = audience, detail `via <acting client ID>`). Not one row per call if that would flood the log: log it at most once per grant and audience per hour (built as once per person, acting app and audience per hour, checked in the audit log: `store.AuditedSince`)
+- [x] `PurgeExpired` (`internal/store/sessions.go`) also deletes expired `delegated_tokens`
+- [x] Tests: a good token for the right app; 403 `no_access` for a person with no role there; 403 `not_accepted` when either list is missing; unknown audience; a signed-out grant refused; the token is stored hashed
+- [ ] Test: an idle browser grant refused
 
 ### 8. `GET /api/v1/token`
-- [ ] Handler `apiToken`: behind `requireClient` (the receiving app's Basic auth) plus the `X-Token` header (token in a header, never the path, like grant IDs). `Cache-Control: no-store`
-- [ ] `store.CheckDelegatedToken(token, audienceAppID)` finds the token and requires, all at once: it has not expired; its audience is the calling app; its grant still exists and is public, with a live session; the user is not disabled; the person still has an unsuspended role in the audience app; the audience still lists the grant's app in `AcceptsFrom` and the grant's app still lists the audience in `ActsIn`. Anything else is `ErrNotFound`
-- [ ] Every failure is 401 `invalid_token` with the same text, so a caller can't tell a token for another app from an expired one. The caller treats 401 as "ask for a new token"
-- [ ] Response: `{"user": {sub, username, name, email, role}, "via": "website"}`. `role` is the role in the audience app, `via` is the grant's app client ID. `apiUserOf` also sends `user_admin`; leave it, the apps ignore unknown fields
-- [ ] A token check does not update `last_checked_at` on the grant. Only the browser's own calls keep the 8 hours alive, so a busy app can't keep an abandoned tab signed in
-- [ ] Tests: wrong audience; expired (set `expires_at` back by hand); after sign-out (`apiLogout`, then the token fails); after the account is disabled; after the role is suspended or removed; after an opt-in list changes; a bad or missing client secret
+- [x] Handler `apiToken`: behind `requireClient` (the receiving app's Basic auth) plus the `X-Token` header (token in a header, never the path, like grant IDs). `Cache-Control: no-store`
+- [x] `store.CheckDelegatedToken(token, audienceAppID)` finds the token and requires, all at once: it has not expired; its audience is the calling app; its grant still exists, with a live session (the "is public" part waits for public grants; built: also an unsuspended role in the grant's own app); the user is not disabled; the person still has an unsuspended role in the audience app; the audience still lists the grant's app in `AcceptsFrom` and the grant's app still lists the audience in `ActsIn`. Anything else is `ErrNotFound`
+- [x] Every failure is 401 `invalid_token` with the same text, so a caller can't tell a token for another app from an expired one. The caller treats 401 as "ask for a new token"
+- [x] Response: `{"user": {sub, username, name, email, role}, "via": "website"}`. `role` is the role in the audience app, `via` is the grant's app client ID. `apiUserOf` also sends `user_admin`; leave it, the apps ignore unknown fields
+- [x] A token check does not update `last_checked_at` on the grant. Only the browser's own calls keep the 8 hours alive, so a busy app can't keep an abandoned tab signed in
+- [x] Tests: wrong audience; expired (set `expires_at` back by hand); after sign-out (`apiLogout`, then the token fails); after the account is disabled; after the role is suspended or removed; after an opt-in list changes; a bad or missing client secret
 
 ### 9. Default role per app
-- [ ] `handleUserCreate` (`internal/server/handlers_admin.go`), after `CreateUser`: for each app with a `DefaultRole`, call `SetAccess(userID, app.ID, app.DefaultRole, false, false, actorID)`. Put the loop in `store.ApplyDefaultRoles(userID, by)` so it runs in one transaction and can be tested alone. The audit entry `user.create` lists the roles given
-- [ ] Not applied: the first-run `/setup` user (`internal/server/auth.go`), `main.go` user creation, and `internal/importer` (`import-users` sets roles from the old apps' `is_admin`). Not applied to people who already exist when a default is set; a user admin uses the grid for them
-- [ ] User form (`web/templates/pages/`): after the fields, a line "They will get: Website: member, Calendar: member" so the admin sees what happens; the admin can change any cell afterwards on the person's page as today
-- [ ] Tests: new user gets the default in every app that has one and nothing in the others; an app with no default gives no row; changing the default later doesn't touch existing people; `import-users` and `/setup` are unchanged
+- [x] `handleUserCreate` (`internal/server/handlers_admin.go`), after `CreateUser`: for each app with a `DefaultRole`, call `SetAccess(userID, app.ID, app.DefaultRole, false, false, actorID)`. Put the loop in `store.ApplyDefaultRoles(userID, by)` so it runs in one transaction and can be tested alone. The audit entry `user.create` lists the roles given
+- [x] Not applied: the first-run `/setup` user (`internal/server/auth.go`), `main.go` user creation, and `internal/importer` (`import-users` sets roles from the old apps' `is_admin`). Not applied to people who already exist when a default is set; a user admin uses the grid for them
+- [x] User form (`web/templates/pages/`): after the fields, a line "They will get: Website: member, Calendar: member" so the admin sees what happens; the admin can change any cell afterwards on the person's page as today
+- [x] Tests: new user gets the default in every app that has one and nothing in the others; an app with no default gives no row; changing the default later doesn't touch existing people; `import-users` and `/setup` are unchanged
 
 ### 10. Tests that tie it together
-All in `internal/server/` (new `members_test.go`, using the helpers in `sso_test.go`):
-- [ ] Wrong audience: a token made for the calendar is refused when the directory presents it at `/api/v1/token`
-- [ ] Expired token refused at `/api/v1/token`
-- [ ] Token after sign-out: `POST /api/v1/logout` with the browser grant, then the token fails and `me/apps` returns 401
-- [ ] App not accepting the website: `delegate` is 403 `not_accepted`, and `me/apps` doesn't list it
-- [ ] Person with no role: `delegate` is 403 `no_access`
+All in `internal/server/` (new `members_test.go`, using the helpers in `sso_test.go`; the delegation ones are in `delegation_test.go`):
+- [x] Wrong audience: a token made for the calendar is refused when the directory presents it at `/api/v1/token`
+- [x] Expired token refused at `/api/v1/token`
+- [x] Token after sign-out: `POST /api/v1/logout` with the (confidential, for now) grant, then the token fails and `me/apps` returns 401
+- [x] App not accepting the caller (`mcp` for now): `delegate` is 403 `not_accepted`, and `me/apps` doesn't list it
+- [x] Person with no role: `delegate` is 403 `no_access`
 - [ ] Unregistered origin refused by CORS: no headers on a preflight or call from it
 - [ ] Public grant refused on the app-admin APIs: `GET /api/v1/grant` and the users PATCH with 403 `public_grant`
-- [ ] Default role on a new user: created through `/admin/users`, the person has the default role in each app that has one
+- [x] Default role on a new user: created through `/admin/users`, the person has the default role in each app that has one
 - [ ] Browser grant idle for 8 hours is ended; a confidential app's SSO flow test (`TestSSOFlow`) passes unchanged
-- [ ] `go vet ./...` and `go test ./...` pass; `go.mod` is unchanged
+- [x] `go vet ./...` and `go test ./...` pass; `go.mod` is unchanged
 
 ### 11. Docs and rollout
 - [ ] `PLAN.md`: data model block (new columns, `delegated_tokens`), a "Browser sign-in and per-app tokens" section short enough to read, and a pointer to this file. Token table gains `umd_` tokens (15 min) and the browser grant (8 hours idle)

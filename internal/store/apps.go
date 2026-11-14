@@ -21,7 +21,17 @@ type App struct {
 	BaseURL      string
 	RedirectURIs []string // matched exactly
 	Roles        []string // the roles the app understands, e.g. user, admin
+	ActsIn       []string // "May act for users in": client IDs it may get per-app tokens for
+	AcceptsFrom  []string // "Accepts tokens from": client IDs whose per-app tokens it takes
+	DefaultRole  string   // the role a new user gets here; "" for none
 	CreatedAt    string
+}
+
+// MayActIn reports whether a may get a per-app token for audience: a
+// lists audience in ActsIn and audience lists a in AcceptsFrom. Both
+// sides opt in, and an app never acts in itself.
+func (a *App) MayActIn(audience *App) bool {
+	return a.ID != audience.ID && slices.Contains(a.ActsIn, audience.ClientID) && slices.Contains(audience.AcceptsFrom, a.ClientID)
 }
 
 // RedirectAllowed reports whether uri is one of the app's registered
@@ -32,15 +42,17 @@ func (a *App) RedirectAllowed(uri string) bool {
 
 func (a *App) HasRole(role string) bool { return role != "" && slices.Contains(a.Roles, role) }
 
-const appCols = `id, client_id, name, base_url, redirect_uris, roles, created_at`
+const appCols = `id, client_id, name, base_url, redirect_uris, roles, acts_in, accepts_from, default_role, created_at`
 
 func scanApp(row scanner, a *App) error {
-	var uris, roles string
-	if err := row.Scan(&a.ID, &a.ClientID, &a.Name, &a.BaseURL, &uris, &roles, &a.CreatedAt); err != nil {
+	var uris, roles, actsIn, acceptsFrom string
+	if err := row.Scan(&a.ID, &a.ClientID, &a.Name, &a.BaseURL, &uris, &roles, &actsIn, &acceptsFrom, &a.DefaultRole, &a.CreatedAt); err != nil {
 		return err
 	}
 	a.RedirectURIs = splitList(uris, "\n")
 	a.Roles = splitList(roles, ",")
+	a.ActsIn = splitList(actsIn, ",")
+	a.AcceptsFrom = splitList(acceptsFrom, ",")
 	return nil
 }
 
@@ -95,8 +107,10 @@ func newSecret() string { return "um_" + RandomToken() }
 // ever shown this once.
 func (s *Store) CreateApp(a *App) (string, error) {
 	secret := newSecret()
-	res, err := s.DB.Exec(`INSERT INTO apps (client_id, name, base_url, redirect_uris, roles, secret_hash) VALUES (?, ?, ?, ?, ?, ?)`,
-		a.ClientID, a.Name, a.BaseURL, strings.Join(a.RedirectURIs, "\n"), strings.Join(a.Roles, ","), HashToken(secret))
+	res, err := s.DB.Exec(`INSERT INTO apps (client_id, name, base_url, redirect_uris, roles, acts_in, accepts_from, default_role, secret_hash)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		a.ClientID, a.Name, a.BaseURL, strings.Join(a.RedirectURIs, "\n"), strings.Join(a.Roles, ","),
+		strings.Join(a.ActsIn, ","), strings.Join(a.AcceptsFrom, ","), a.DefaultRole, HashToken(secret))
 	if err != nil {
 		return "", err
 	}
@@ -104,11 +118,22 @@ func (s *Store) CreateApp(a *App) (string, error) {
 	return secret, nil
 }
 
-// UpdateApp saves name, base URL, redirect URIs and roles. The client ID
-// can't change: each app has it in its configuration.
+// UpdateApp saves name, base URL, redirect URIs, roles, the two
+// per-app token lists and the default role. The client ID can't change:
+// each app has it in its configuration.
 func (s *Store) UpdateApp(a *App) error {
-	_, err := s.DB.Exec(`UPDATE apps SET name = ?, base_url = ?, redirect_uris = ?, roles = ? WHERE id = ?`,
-		a.Name, a.BaseURL, strings.Join(a.RedirectURIs, "\n"), strings.Join(a.Roles, ","), a.ID)
+	_, err := s.DB.Exec(`UPDATE apps SET name = ?, base_url = ?, redirect_uris = ?, roles = ?, acts_in = ?, accepts_from = ?, default_role = ?
+		WHERE id = ?`,
+		a.Name, a.BaseURL, strings.Join(a.RedirectURIs, "\n"), strings.Join(a.Roles, ","),
+		strings.Join(a.ActsIn, ","), strings.Join(a.AcceptsFrom, ","), a.DefaultRole, a.ID)
+	return err
+}
+
+// SetAppDelegation saves just the per-app token lists and the default
+// role, for register-app.
+func (s *Store) SetAppDelegation(appID int64, actsIn, acceptsFrom []string, defaultRole string) error {
+	_, err := s.DB.Exec(`UPDATE apps SET acts_in = ?, accepts_from = ?, default_role = ? WHERE id = ?`,
+		strings.Join(actsIn, ","), strings.Join(acceptsFrom, ","), defaultRole, appID)
 	return err
 }
 
@@ -193,6 +218,14 @@ type RoleInUseError struct {
 	N    int
 }
 
+// DefaultRoleError says a role can't be removed because it's the app's
+// default role for new users.
+type DefaultRoleError struct{ Role string }
+
+func (e *DefaultRoleError) Error() string {
+	return fmt.Sprintf("the %s role is the default for new users but isn't in the app's roles; change the default role too", e.Role)
+}
+
 func (e *RoleInUseError) Error() string {
 	return fmt.Sprintf("can't remove the %s role: %d person(s) still have it; rename it or change their role first", e.Role, e.N)
 }
@@ -202,14 +235,19 @@ func (e *RoleInUseError) Error() string {
 // Removing a role someone still has is refused with *RoleInUseError and
 // nothing changes. With dry it does all the checks and then rolls back, still
 // returning who would move.
-func (s *Store) ChangeAppRoles(appID int64, renames [][2]string, roles []string, dry bool) ([]RoleMove, error) {
+//
+// With defaultRole nil the app's default role for new users is kept, and a
+// rename carries it along; otherwise it's set to *defaultRole ("" for
+// none). Either way a default that isn't in roles is refused with
+// *DefaultRoleError, and admin is refused.
+func (s *Store) ChangeAppRoles(appID int64, renames [][2]string, roles []string, defaultRole *string, dry bool) ([]RoleMove, error) {
 	tx, err := s.DB.Begin()
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
-	var cur string
-	if err := tx.QueryRow(`SELECT roles FROM apps WHERE id = ?`, appID).Scan(&cur); err != nil {
+	var cur, def string
+	if err := tx.QueryRow(`SELECT roles, default_role FROM apps WHERE id = ?`, appID).Scan(&cur, &def); err != nil {
 		return nil, notFound(err)
 	}
 	var moves []RoleMove
@@ -234,6 +272,18 @@ func (s *Store) ChangeAppRoles(appID int64, renames [][2]string, roles []string,
 			r[1], sqlTime(time.Now()), appID, r[0]); err != nil {
 			return nil, err
 		}
+		if def == r[0] {
+			def = r[1]
+		}
+	}
+	if defaultRole != nil {
+		def = *defaultRole
+	}
+	if def == "admin" {
+		return nil, errors.New("new users can't get admin by default; pick another default role")
+	}
+	if def != "" && !slices.Contains(roles, def) {
+		return nil, &DefaultRoleError{Role: def}
 	}
 	for _, role := range strings.Split(cur, ",") {
 		if role == "" || slices.Contains(roles, role) {
@@ -247,7 +297,7 @@ func (s *Store) ChangeAppRoles(appID int64, renames [][2]string, roles []string,
 			return nil, &RoleInUseError{Role: role, N: n}
 		}
 	}
-	if _, err := tx.Exec(`UPDATE apps SET roles = ? WHERE id = ?`, strings.Join(roles, ","), appID); err != nil {
+	if _, err := tx.Exec(`UPDATE apps SET roles = ?, default_role = ? WHERE id = ?`, strings.Join(roles, ","), def, appID); err != nil {
 		return nil, err
 	}
 	if dry {

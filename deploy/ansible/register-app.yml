@@ -3,12 +3,11 @@
 # people who use another app (per its sso_apps entry) the same access to it.
 # Run after deploy.yml. Only shows what it would do unless dry_run is false:
 #
-#   export DIGITALOCEAN_TOKEN=...
-#   ansible-playbook register-app.yml -e app=events                    # dry run, the event planner
-#   ansible-playbook register-app.yml -e app=events -e dry_run=false   # for real
-#   ansible-playbook register-app.yml -e app=planner -e dry_run=false -e rotate_secret=true
-#   ansible-playbook register-app.yml -e app=events -e copy_access_from=   # copy nobody
-#   ansible-playbook register-app.yml -e app=events -e dry_run=false -e keychain_service=    # print it instead
+#   with-do-church ansible-playbook register-app.yml -e app=events                    # dry run, the event planner
+#   with-do-church ansible-playbook register-app.yml -e app=events -e dry_run=false   # for real
+#   with-do-church ansible-playbook register-app.yml -e app=planner -e dry_run=false -e rotate_secret=true
+#   with-do-church ansible-playbook register-app.yml -e app=events -e copy_access_from=   # copy nobody
+#   with-do-church ansible-playbook register-app.yml -e app=events -e dry_run=false -e keychain_service=    # print it instead
 # An sso_apps entry with roles / rename_roles also sets the app's roles and
 # moves people between roles (events: helper, planner, admin; user -> helper.
 # calendar: member, scheduler, admin; directory: member, editor, admin), even if the app is already registered.
@@ -21,7 +20,8 @@
 # (lost or leaked). The old one stops working at once, so the app can't sign
 # anyone in until it's redeployed with the new one.
 #
-# A real run backs up User Management's database first. When it makes a
+# It only touches User Management's own database, so the registered app can be
+# on any box. A real run backs up User Management's database first. When it makes a
 # secret (new app, or rotate_secret) and this machine is a Mac, the secret
 # goes into the login Keychain as keychain_service (default: the app's
 # sso_apps keychain, e.g. um-events; "" to skip), fed to `security -i` on stdin so it's never in a command line,
@@ -39,6 +39,9 @@
         fail_msg: >-
           {{ 'Unknown app "' ~ app ~ '". ' if app | default('') else 'Say which app with -e app=<name> (make register-app APP=<name>). ' }}Use one of: {{ sso_apps.keys() | sort | join(', ') }}.
         quiet: true
+
+    - name: Check the account
+      ansible.builtin.include_tasks: tasks/check_account.yml
 
     - name: Find the droplets
       ansible.builtin.include_tasks: tasks/find_droplets.yml
@@ -183,7 +186,7 @@
       ansible.builtin.debug:
         msg: >-
           Saved the {{ app_label }} client secret to your Keychain as {{ kc_service }}.
-          Deploy the {{ app_label }} with: with-do with-um make deploy (in ../{{ entry.deploy_repo }})
+          Deploy the {{ app_label }} with: with-do-church with-um make deploy (in ../{{ entry.deploy_repo }})
       when: saved | bool
 
     - name: Say the Keychain wasn't used

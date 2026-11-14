@@ -3,32 +3,32 @@
 
 # The domain as added under Networking → Domains in DigitalOcean, with your
 # registrar's nameservers pointed at ns1/ns2/ns3.digitalocean.com. The
-# provision play creates the A record for app_domain in it.
+# provision play points the A record for app_domain at the edge box.
 dns_zone: example.org
-# Public address of the app (default accounts.<dns_zone>). Caddy gets its
-# HTTPS certificate for this name.
+# Public address of the app (default accounts.<dns_zone>). The edge box's
+# Caddy gets its HTTPS certificate for this name.
 # app_domain: accounts.example.org
 
 # Project to put the droplet in (Projects in the control panel sidebar).
 do_project: My Project
 
-# Datacenter, droplet size and OS, only used if there's no droplet tagged
-# maintenance-tracker yet. These are the defaults: New York 3, $6/month,
-# Ubuntu 26.04.
+# Datacenter, droplet size and OS, only used if there's no apps box yet. These
+# are the defaults: New York 3, $6/month, Ubuntu 26.04.
 do_region: nyc3
 do_size: s-1vcpu-1gb
 do_image: ubuntu-26-04-x64
-# Shares the maintenance tracker's droplet, found by its tag.
-droplet_name: maintenance-tracker
-# do_tag: maintenance-tracker
 
-# Extra droplet tags, e.g. ones your own cloud firewalls target. If those
-# firewalls already allow SSH/HTTP/HTTPS, also turn off the play's own.
-# do_extra_tags: [website, ssh]
-# do_firewall: false
+# The apps box this app runs on (the default). Apps can share a box; change it
+# and run `make move FROM=<old box>` to move the app.
+apps_box: apps-1
+# The DigitalOcean team the token must belong to; empty skips the check.
+# do_team: My Team
+
+# Extra droplet tags. ssh is the one the ssh firewall (edge_proxy) targets.
+do_extra_tags: [ssh]
 
 # A dedicated deploy key (see the tracker's README) instead of your default
-# ssh setup. The same key works for all three apps.
+# ssh setup. The same key works for every app.
 # ssh_private_key_file: ~/.ssh/maintenance_deploy
 # ssh_identity_agent: SSH_AUTH_SOCK   # if ~/.ssh/config sends ssh to another agent
 # Your own keys (e.g. on a YubiKey) for logging in by hand alongside it.
@@ -52,3 +52,7 @@ directory_url: https://directory.example.org
 # copy_access_from: planner
 # rotate_secret: false          # true: new secret for an already-registered app
 # keychain_service: um-events   # overrides the app's Keychain item (sso_apps); "" prints the secret
+
+# After changing domain, a restore swaps these in the database.
+# address_rewrites:
+#   - { from: app.example.org, to: app.example.net }

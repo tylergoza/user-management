@@ -109,12 +109,18 @@ func (s *Store) DeleteOtherSessions(userID, keepID int64) (int64, error) {
 	return res.RowsAffected()
 }
 
-// PurgeExpired clears out expired sessions and sign-in codes.
+// PurgeExpired clears out expired sessions, sign-in codes and per-app
+// tokens.
 func (s *Store) PurgeExpired() error {
 	now := sqlTime(time.Now())
-	if _, err := s.DB.Exec(`DELETE FROM sessions WHERE expires_at <= ?`, now); err != nil {
-		return err
+	for _, q := range []string{
+		`DELETE FROM sessions WHERE expires_at <= ?`,
+		`DELETE FROM auth_codes WHERE expires_at <= ?`,
+		`DELETE FROM delegated_tokens WHERE expires_at <= ?`,
+	} {
+		if _, err := s.DB.Exec(q, now); err != nil {
+			return err
+		}
 	}
-	_, err := s.DB.Exec(`DELETE FROM auth_codes WHERE expires_at <= ?`, now)
-	return err
+	return nil
 }

@@ -189,6 +189,7 @@ func (s *Server) funcs() template.FuncMap {
 		"dict":       dict,
 		"auditLabel": store.AuditLabel,
 		"device":     device,
+		"has":        slices.Contains[[]string],
 	}
 }
 

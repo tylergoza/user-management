@@ -1,0 +1,154 @@
+# Puts a backup from `make backup` on the apps box: the database, owned by the
+# service user, mode 0600. Refuses if the box already has a
+# database, unless FORCE=true, which first takes a pre-restore backup on the box.
+# Run `make provision RESTORE_PENDING=true` first, so the app hasn't started and
+# made an empty database.
+#
+#   with-do-church make restore BACKUP=latest      # or BACKUP=<dir>
+#   with-do-church make restore BACKUP=latest FORCE=true
+
+- name: Find the backup and the droplet
+  hosts: localhost
+  gather_facts: false
+  vars_files: [defaults.yml, vars.yml]
+  tasks:
+    - name: Check the account
+      ansible.builtin.include_tasks: tasks/check_account.yml
+
+    - name: Find the droplets
+      ansible.builtin.include_tasks: tasks/find_droplets.yml
+
+    - name: Check there's somewhere to restore to
+      ansible.builtin.assert:
+        that: groups['app'] | default([]) | length > 0
+        fail_msg: No droplets are tagged {{ do_tag }}. Run provision.yml first.
+        quiet: true
+
+    - name: Find the newest backup
+      ansible.builtin.find:
+        paths: "{{ local_backup_dir | expanduser }}/user-management"
+        file_type: directory
+      register: backups
+      when: backup | default('latest') == 'latest'
+
+    - name: Pick the backup
+      ansible.builtin.set_fact:
+        backup_dir: >-
+          {{ (backups.files | sort(attribute='path') | last).path if backup | default('latest') == 'latest'
+             else backup | expanduser }}
+
+    - name: Read the manifest
+      ansible.builtin.set_fact:
+        manifest: "{{ lookup('ansible.builtin.file', backup_dir ~ '/manifest.yml') | from_yaml }}"
+
+    - name: Check it's this app's backup
+      ansible.builtin.assert:
+        that: manifest.app == 'user-management' and 'users.db' in manifest.files
+        fail_msg: "{{ backup_dir }} isn't a user-management backup."
+        quiet: true
+
+    - name: Checksum the files
+      ansible.builtin.stat:
+        path: "{{ backup_dir }}/{{ item.key }}"
+        checksum_algorithm: sha256
+      loop: "{{ manifest.files | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+      register: sums
+
+    - name: Check they match the manifest
+      ansible.builtin.assert:
+        that: item.stat.exists and item.stat.checksum == item.item.value
+        fail_msg: "{{ backup_dir }}/{{ item.item.key }} doesn't match its manifest."
+        quiet: true
+      loop: "{{ sums.results }}"
+      loop_control:
+        label: "{{ item.item.key }}"
+
+- name: Install the backup
+  hosts: app
+  gather_facts: false
+  vars_files: [defaults.yml, vars.yml]
+  vars:
+    backup_dir: "{{ hostvars.localhost.backup_dir }}"
+    manifest: "{{ hostvars.localhost.manifest }}"
+    um: [runuser, -u, "{{ app_user }}", --, "{{ app_bin }}", -db, "{{ app_db }}"]
+  tasks:
+    - name: Check the app is installed
+      ansible.builtin.stat:
+        path: /etc/systemd/system/user-management.service
+      register: unit
+      failed_when: not unit.stat.exists
+
+    - name: Look for an existing database
+      ansible.builtin.stat:
+        path: "{{ app_db }}"
+      register: db
+
+    - name: Don't overwrite it by accident
+      ansible.builtin.assert:
+        that: not db.stat.exists or force | default(false) | bool
+        fail_msg: >-
+          {{ inventory_hostname }} already has a database. Use FORCE=true to replace it
+          (a pre-restore backup is kept on the box).
+        quiet: true
+
+    # Fixed once, so the backup's files all carry the same time.
+    - name: Name the pre-restore backup
+      ansible.builtin.set_fact:
+        stem: "{{ app_backup_dir ~ '/pre-restore-' ~ now(utc=true, fmt='%Y%m%dT%H%M%SZ') }}"
+      when: db.stat.exists
+
+    - name: Take a pre-restore backup
+      when: db.stat.exists
+      block:
+        - name: Back up the database
+          ansible.builtin.command:
+            argv: "{{ um + ['backup', stem ~ '.db'] }}"
+          changed_when: true
+
+    - name: Stop the app
+      ansible.builtin.systemd_service:
+        name: user-management
+        state: stopped
+
+    - name: Install the files
+      ansible.builtin.copy:
+        src: "{{ backup_dir }}/{{ item }}"
+        dest: "{{ app_data_dir }}/{{ item }}"
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: "0600"
+      loop: "{{ manifest.files.keys() | list }}"
+
+    - name: Remove stale write-ahead files
+      ansible.builtin.file:
+        path: "{{ app_db }}{{ item }}"
+        state: absent
+      loop: [-wal, -shm]
+
+    - name: Rewrite saved addresses
+      ansible.builtin.include_tasks: tasks/rewrite_addresses.yml
+      vars:
+        rewrite_sqlite: [runuser, -u, "{{ app_user }}", --, sqlite3]
+      when: address_rewrites | length > 0
+
+    - name: Start the app
+      ansible.builtin.systemd_service:
+        name: user-management
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    # Migrations run on start, so give it a while.
+    - name: Wait for the app to answer
+      ansible.builtin.uri:
+        url: http://{{ private_ip }}:{{ app_port }}/healthz
+      register: health
+      until: health.status == 200
+      retries: 30
+      delay: 2
+
+    - name: Done
+      ansible.builtin.debug:
+        msg: "Restored {{ backup_dir | basename }} to {{ inventory_hostname }}."

@@ -2,6 +2,7 @@ package store
 
 import (
 	"strings"
+	"time"
 )
 
 // AuditEvent is something to record in the audit log. Zero IDs are stored
@@ -55,6 +56,7 @@ var auditLabels = map[string]string{
 	"access.grant":         "Gave app access",
 	"access.update":        "Changed app access",
 	"access.remove":        "Removed app access",
+	"token.delegate":       "An app acted for them in another app",
 }
 
 // AuditLabel is the readable name of an action.
@@ -69,6 +71,17 @@ func (s *Store) Audit(e AuditEvent) error {
 	_, err := s.DB.Exec(`INSERT INTO audit_log (actor_user_id, action, target_user_id, app_id, detail, ip) VALUES (?, ?, ?, ?, ?, ?)`,
 		nullInt(e.Actor), e.Action, nullInt(e.Target), nullInt(e.App), truncate(e.Detail, 1000), e.IP)
 	return err
+}
+
+// AuditedSince reports whether the same event (actor, action, target, app
+// and detail) was logged at or after since, so a frequent one can be
+// logged at most once in a while.
+func (s *Store) AuditedSince(e AuditEvent, since time.Time) (bool, error) {
+	var n int
+	err := s.DB.QueryRow(`SELECT COUNT(*) FROM audit_log WHERE actor_user_id IS ? AND action = ? AND target_user_id IS ?
+		AND app_id IS ? AND detail = ? AND at >= ?`,
+		nullInt(e.Actor), e.Action, nullInt(e.Target), nullInt(e.App), truncate(e.Detail, 1000), sqlTime(since)).Scan(&n)
+	return n > 0, err
 }
 
 type AuditFilter struct {

@@ -24,9 +24,26 @@ func (s *Server) handleApps(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAppNew(w http.ResponseWriter, r *http.Request) {
-	s.render(w, r, http.StatusOK, "admin/apps/form", map[string]any{
-		"Title": "Register an app", "Form": appForm{Roles: "user, admin"},
-	})
+	s.renderAppForm(w, r, http.StatusOK, map[string]any{"Title": "Register an app", "Form": appForm{Roles: "user, admin"}})
+}
+
+// renderAppForm shows the app form, with the other registered apps for
+// the two per-app token lists.
+func (s *Server) renderAppForm(w http.ResponseWriter, r *http.Request, status int, data map[string]any) {
+	apps, err := s.store.ListApps()
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	self := data["Form"].(appForm).ID
+	var others []store.App
+	for _, a := range apps {
+		if a.ID != self {
+			others = append(others, a)
+		}
+	}
+	data["OtherApps"] = others
+	s.render(w, r, status, "admin/apps/form", data)
 }
 
 // appForm is the app form as typed, so it can be shown again with errors.
@@ -37,16 +54,45 @@ type appForm struct {
 	BaseURL      string
 	RedirectURIs string
 	Roles        string
+	ActsIn       []string // client IDs
+	AcceptsFrom  []string // client IDs
+	DefaultRole  string
 }
 
 func appFormOf(a *store.App) appForm {
 	return appForm{ID: a.ID, ClientID: a.ClientID, Name: a.Name, BaseURL: a.BaseURL,
-		RedirectURIs: strings.Join(a.RedirectURIs, "\n"), Roles: strings.Join(a.Roles, ", ")}
+		RedirectURIs: strings.Join(a.RedirectURIs, "\n"), Roles: strings.Join(a.Roles, ", "),
+		ActsIn: a.ActsIn, AcceptsFrom: a.AcceptsFrom, DefaultRole: a.DefaultRole}
 }
 
 func readAppForm(r *http.Request) appForm {
 	return appForm{ClientID: formStr(r, "client_id"), Name: formStr(r, "name"), BaseURL: formStr(r, "base_url"),
-		RedirectURIs: formStr(r, "redirect_uris"), Roles: formStr(r, "roles")}
+		RedirectURIs: formStr(r, "redirect_uris"), Roles: formStr(r, "roles"),
+		ActsIn: formList(r, "acts_in"), AcceptsFrom: formList(r, "accepts_from"), DefaultRole: formStr(r, "default_role")}
+}
+
+// RoleList is the roles as typed, for the default role select.
+func (f appForm) RoleList() []string {
+	var out []string
+	for _, r := range strings.Split(f.Roles, ",") {
+		if r = strings.ToLower(strings.TrimSpace(r)); r != "" && !slices.Contains(out, r) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// formList is a form field sent several times (checkboxes), trimmed,
+// without blanks or repeats.
+func formList(r *http.Request, key string) []string {
+	r.ParseForm()
+	var out []string
+	for _, v := range r.PostForm[key] {
+		if v = strings.TrimSpace(v); v != "" && !slices.Contains(out, v) {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 var (
@@ -55,8 +101,9 @@ var (
 )
 
 // validate checks the form and fills in a (all but the client ID, which
-// only a new app sets).
-func (f *appForm) validate(a *store.App) []string {
+// only a new app sets). clientIDs are the registered apps', for the two
+// per-app token lists; selfID is the app's own client ID.
+func (f *appForm) validate(a *store.App, clientIDs []string, selfID string) []string {
 	var errs []string
 	a.Name, a.BaseURL = f.Name, f.BaseURL
 	if f.Name == "" || len(f.Name) > 100 {
@@ -91,7 +138,38 @@ func (f *appForm) validate(a *store.App) []string {
 	if !slices.Contains(a.Roles, "admin") {
 		errs = append(errs, "Roles must include admin: app admins manage people's access from inside the app.")
 	}
+	a.ActsIn, a.AcceptsFrom, a.DefaultRole = f.ActsIn, f.AcceptsFrom, f.DefaultRole
+	for _, list := range []struct {
+		label string
+		ids   []string
+	}{{"May act for users in", f.ActsIn}, {"Accepts tokens from", f.AcceptsFrom}} {
+		for _, id := range list.ids {
+			if id == selfID || !slices.Contains(clientIDs, id) {
+				errs = append(errs, list.label+": "+quoteOrNone(id)+" isn't another registered app.")
+			}
+		}
+	}
+	if f.DefaultRole != "" {
+		if f.DefaultRole == "admin" {
+			errs = append(errs, "New users can't get admin by default: pick another role, or no default.")
+		} else if !slices.Contains(a.Roles, f.DefaultRole) {
+			errs = append(errs, "New users' role "+quoteOrNone(f.DefaultRole)+" must be one of the app's roles.")
+		}
+	}
 	return errs
+}
+
+// clientIDs lists every registered app's client ID.
+func (s *Server) clientIDs() ([]string, error) {
+	apps, err := s.store.ListApps()
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(apps))
+	for _, a := range apps {
+		ids = append(ids, a.ClientID)
+	}
+	return ids, nil
 }
 
 // webURL reports whether s is an absolute http(s) address.
@@ -103,7 +181,12 @@ func webURL(s string) bool {
 func (s *Server) handleAppCreate(w http.ResponseWriter, r *http.Request) {
 	f := readAppForm(r)
 	a := store.App{ClientID: f.ClientID}
-	errs := f.validate(&a)
+	ids, err := s.clientIDs()
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	errs := f.validate(&a, ids, f.ClientID)
 	if !clientIDRe.MatchString(f.ClientID) {
 		errs = append(errs, "Client ID must be 2 to 32 lowercase letters, numbers or dashes, starting with a letter.")
 	}
@@ -119,10 +202,14 @@ func (s *Server) handleAppCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if len(errs) > 0 {
-		s.render(w, r, http.StatusUnprocessableEntity, "admin/apps/form", map[string]any{"Title": "Register an app", "Form": f, "Errors": errs})
+		s.renderAppForm(w, r, http.StatusUnprocessableEntity, map[string]any{"Title": "Register an app", "Form": f, "Errors": errs})
 		return
 	}
-	s.audit(r, store.AuditEvent{Action: "app.create", App: a.ID, Detail: a.ClientID})
+	detail := a.ClientID
+	if changes := appChanges(&store.App{Name: a.Name, BaseURL: a.BaseURL, RedirectURIs: a.RedirectURIs, Roles: a.Roles}, &a); changes != "" {
+		detail += "; " + changes
+	}
+	s.audit(r, store.AuditEvent{Action: "app.create", App: a.ID, Detail: detail})
 	s.renderSecret(w, r, &a, secret, true)
 }
 
@@ -150,7 +237,7 @@ func (s *Server) handleAppEdit(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, err)
 		return
 	}
-	s.render(w, r, http.StatusOK, "admin/apps/form", map[string]any{"Title": "Edit " + a.Name, "Form": appFormOf(a), "App": a})
+	s.renderAppForm(w, r, http.StatusOK, map[string]any{"Title": "Edit " + a.Name, "Form": appFormOf(a), "App": a})
 }
 
 func (s *Server) handleAppUpdate(w http.ResponseWriter, r *http.Request) {
@@ -162,7 +249,12 @@ func (s *Server) handleAppUpdate(w http.ResponseWriter, r *http.Request) {
 	f := readAppForm(r)
 	f.ID, f.ClientID = old.ID, old.ClientID
 	a := *old
-	errs := f.validate(&a)
+	ids, err := s.clientIDs()
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	errs := f.validate(&a, ids, old.ClientID)
 	for _, role := range old.Roles {
 		if slices.Contains(a.Roles, role) {
 			continue
@@ -175,7 +267,7 @@ func (s *Server) handleAppUpdate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if len(errs) > 0 {
-		s.render(w, r, http.StatusUnprocessableEntity, "admin/apps/form", map[string]any{"Title": "Edit " + old.Name, "Form": f, "App": old, "Errors": errs})
+		s.renderAppForm(w, r, http.StatusUnprocessableEntity, map[string]any{"Title": "Edit " + old.Name, "Form": f, "App": old, "Errors": errs})
 		return
 	}
 	if err := s.store.UpdateApp(&a); err != nil {
@@ -210,7 +302,23 @@ func appChanges(old, a *store.App) string {
 	if !slices.Equal(old.Roles, a.Roles) {
 		c = append(c, "roles "+strings.Join(a.Roles, ", "))
 	}
+	if !slices.Equal(old.ActsIn, a.ActsIn) {
+		c = append(c, "may act for users in "+listOrNone(a.ActsIn))
+	}
+	if !slices.Equal(old.AcceptsFrom, a.AcceptsFrom) {
+		c = append(c, "accepts tokens from "+listOrNone(a.AcceptsFrom))
+	}
+	if old.DefaultRole != a.DefaultRole {
+		c = append(c, "new users get "+quoteOrNone(old.DefaultRole)+" → "+quoteOrNone(a.DefaultRole))
+	}
 	return strings.Join(c, "; ")
+}
+
+func listOrNone(l []string) string {
+	if len(l) == 0 {
+		return "(none)"
+	}
+	return strings.Join(l, ", ")
 }
 
 func (s *Server) handleAppSecret(w http.ResponseWriter, r *http.Request) {

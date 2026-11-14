@@ -1,0 +1,49 @@
+# Turns `from` (an IP or a droplet name) into a host in the "source" group.
+# An IP is used as it is: no token, no API call. A name is looked up in
+# whatever account DIGITALOCEAN_TOKEN belongs to.
+- name: Check from is set
+  ansible.builtin.assert:
+    that: from is defined and from | length > 0
+    fail_msg: Say which box, e.g. make backup FROM=203.0.113.10
+    quiet: true
+
+- name: Use the address as it is
+  ansible.builtin.add_host:
+    name: "{{ from }}"
+    groups: source
+    ansible_user: root
+    ansible_ssh_private_key_file: "{{ (ssh_private_key_file | expanduser) if ssh_private_key_file else omit }}"
+    ansible_ssh_common_args: "{{ root_ssh_args }}"
+  changed_when: false
+  when: from is match('^[0-9]{1,3}(\.[0-9]{1,3}){3}$')
+
+- name: Look the droplet up by name
+  when: from is not match('^[0-9]{1,3}(\.[0-9]{1,3}){3}$')
+  block:
+    - name: Check the API token is set
+      ansible.builtin.assert:
+        that: do_token | length > 0
+        fail_msg: "{{ from }} isn't an IP address, so it's looked up by name. Set DIGITALOCEAN_TOKEN, or pass the IP."
+        quiet: true
+
+    - name: Look up droplets named {{ from }}
+      ansible.builtin.uri:
+        url: https://api.digitalocean.com/v2/droplets?name={{ from }}&per_page=200
+        headers: "{{ do_headers }}"
+      register: named
+
+    - name: Check there's exactly one
+      ansible.builtin.assert:
+        that: named.json.droplets | length == 1
+        fail_msg: "{{ named.json.droplets | length }} droplets named {{ from }} in this account; expected one."
+        quiet: true
+
+    - name: Add it to the source group
+      ansible.builtin.add_host:
+        name: "{{ named.json.droplets[0].name }}"
+        groups: source
+        ansible_host: "{{ (named.json.droplets[0].networks.v4 | selectattr('type', 'eq', 'public') | first).ip_address }}"
+        ansible_user: root
+        ansible_ssh_private_key_file: "{{ (ssh_private_key_file | expanduser) if ssh_private_key_file else omit }}"
+        ansible_ssh_common_args: "{{ root_ssh_args }}"
+      changed_when: false

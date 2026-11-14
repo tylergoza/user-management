@@ -1,7 +1,7 @@
 BINARY := user-management
 LDFLAGS := -s -w
 
-.PHONY: dev run test build build-linux build-linux-arm provision deploy backup import-users register-app clean
+.PHONY: dev run test build build-linux build-linux-arm provision deploy backup restore move import-users register-app clean
 
 # Serve templates/static from disk: edit HTML/JS/CSS and just refresh.
 # Port 8100, so the tracker (8080), planner (8090) and event planner (8110) can run alongside.
@@ -25,16 +25,32 @@ build-linux:
 build-linux-arm:
 	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="$(LDFLAGS)" -o bin/$(BINARY)-linux-arm64 .
 
-# DigitalOcean droplet via Ansible: see "Deploying" in the README.
+# DigitalOcean droplet via Ansible: see "DigitalOcean with Ansible" in the README.
+# Run through with-do-church, except backup FROM=<ip>, which needs only SSH.
+#   make provision [RESTORE_PENDING=true]   box, alerts, DNS, then deploy
+#   make deploy
+#   make backup FROM=<ip or name> [STOP=true]
+#   make restore [BACKUP=latest|<dir>] [FORCE=true]
+#   make move FROM=<box>                    to the apps_box in vars.yml
+RESTORE_PENDING ?= false
+STOP    ?= false
+FORCE   ?= false
+BACKUP  ?= latest
+
 provision:
-	cd deploy/ansible && ansible-playbook provision.yml
+	cd deploy/ansible && ansible-playbook provision.yml -e restore_pending=$(RESTORE_PENDING)
 
 deploy:
 	cd deploy/ansible && ansible-playbook deploy.yml
 
-# Backs up every app's database, on the droplet and under deploy/ansible/backups/.
 backup:
-	cd deploy/ansible && ansible-playbook backup.yml
+	cd deploy/ansible && ansible-playbook backup.yml -e from=$(FROM) -e stop=$(STOP)
+
+restore:
+	cd deploy/ansible && ansible-playbook restore.yml -e backup=$(BACKUP) -e force=$(FORCE)
+
+move:
+	cd deploy/ansible && ansible-playbook move.yml -e from=$(FROM) -e force=$(FORCE)
 
 # Dry run by default. For real: make import-users DRY_RUN=false [PREFER=tracker|planner]
 DRY_RUN ?= true

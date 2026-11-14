@@ -412,3 +412,87 @@ func TestCopyFallbackRole(t *testing.T) {
 		t.Errorf("role = %q, want user", got.Role)
 	}
 }
+
+func runErr(t *testing.T, st *store.Store, args ...string) error {
+	t.Helper()
+	return Run(st, parse(t, args...), &bytes.Buffer{})
+}
+
+func TestDelegationFlags(t *testing.T) {
+	st := openTest(t)
+	run(t, st, "calendar", "--name", "Calendar", "--url", "https://cal.example.org")
+	run(t, st, "directory", "--name", "Directory", "--url", "https://dir.example.org")
+
+	for _, bad := range [][]string{
+		{"mcp", "--name", "MCP", "--url", "https://mcp.example.org", "--acts-in", "mcp"},
+		{"mcp", "--name", "MCP", "--url", "https://mcp.example.org", "--accepts-from", "Not An ID"},
+		{"mcp", "--name", "MCP", "--url", "https://mcp.example.org", "--default-role", "admin"},
+		{"mcp", "--name", "MCP", "--url", "https://mcp.example.org", "--roles", "user,admin", "--default-role", "member"},
+	} {
+		if _, err := ParseArgs(bad, &bytes.Buffer{}); err == nil {
+			t.Errorf("expected an error for %v", bad)
+		}
+	}
+	if err := runErr(t, st, "mcp", "--name", "MCP", "--url", "https://mcp.example.org", "--acts-in", "calendar,nobody"); err == nil ||
+		!strings.Contains(err.Error(), `"nobody"`) {
+		t.Errorf("unknown app in --acts-in: %v", err)
+	}
+	if _, err := st.GetAppByClientID("mcp"); err == nil {
+		t.Error("a refused run shouldn't register the app")
+	}
+
+	// Dry run of a new app changes nothing.
+	args := []string{"mcp", "--name", "MCP", "--url", "https://mcp.example.org", "--acts-in", "calendar, directory", "--default-role", "user"}
+	out := run(t, st, append(args, "--dry-run")...)
+	if !strings.Contains(out, "may act for users in calendar, directory; new users get user") {
+		t.Errorf("dry run:\n%s", out)
+	}
+	if _, err := st.GetAppByClientID("mcp"); err == nil {
+		t.Error("dry run registered the app")
+	}
+	run(t, st, args...)
+	mcp, _ := st.GetAppByClientID("mcp")
+	if strings.Join(mcp.ActsIn, ",") != "calendar,directory" || mcp.AcceptsFrom != nil || mcp.DefaultRole != "user" {
+		t.Errorf("new app: %+v", mcp)
+	}
+
+	// An existing app: only the flags given change it.
+	out = run(t, st, "calendar", "--name", "Calendar", "--url", "https://cal.example.org", "--accepts-from", "mcp", "--dry-run")
+	if !strings.Contains(out, "Would set: accepts tokens from mcp.") {
+		t.Errorf("dry run on an existing app:\n%s", out)
+	}
+	if cal, _ := st.GetAppByClientID("calendar"); cal.AcceptsFrom != nil {
+		t.Error("dry run changed the app")
+	}
+	run(t, st, "calendar", "--name", "Calendar", "--url", "https://cal.example.org", "--accepts-from", "mcp")
+	run(t, st, "mcp", "--name", "MCP", "--url", "https://mcp.example.org", "--acts-in", "calendar")
+	mcp, _ = st.GetAppByClientID("mcp")
+	cal, _ := st.GetAppByClientID("calendar")
+	if strings.Join(cal.AcceptsFrom, ",") != "mcp" || strings.Join(mcp.ActsIn, ",") != "calendar" || mcp.DefaultRole != "user" {
+		t.Errorf("after updates: calendar %+v, mcp %+v", cal, mcp)
+	}
+	if out := run(t, st, "mcp", "--name", "MCP", "--url", "https://mcp.example.org", "--acts-in", "calendar"); strings.Contains(out, "Set:") {
+		t.Errorf("no change should print nothing to set:\n%s", out)
+	}
+	entries, _ := st.ListAudit(store.AuditFilter{Limit: 1})
+	if entries[0].Action != "app.update" || entries[0].Detail != "register-app: may act for users in calendar" {
+		t.Errorf("audit: %+v", entries[0])
+	}
+
+	// The default role follows a rename; removing it needs a new default.
+	run(t, st, "mcp", "--name", "MCP", "--url", "https://mcp.example.org", "--rename-role", "user=member")
+	if mcp, _ = st.GetAppByClientID("mcp"); mcp.DefaultRole != "member" {
+		t.Errorf("default after rename: %q", mcp.DefaultRole)
+	}
+	if err := runErr(t, st, "mcp", "--name", "MCP", "--url", "https://mcp.example.org", "--roles", "viewer,admin"); err == nil {
+		t.Error("removing the default role should be refused")
+	}
+	run(t, st, "mcp", "--name", "MCP", "--url", "https://mcp.example.org", "--roles", "viewer,admin", "--default-role", "viewer")
+	if mcp, _ = st.GetAppByClientID("mcp"); mcp.DefaultRole != "viewer" || strings.Join(mcp.Roles, ",") != "viewer,admin" {
+		t.Errorf("roles and default together: %+v", mcp)
+	}
+	run(t, st, "mcp", "--name", "MCP", "--url", "https://mcp.example.org", "--default-role", "", "--acts-in", "")
+	if mcp, _ = st.GetAppByClientID("mcp"); mcp.DefaultRole != "" || mcp.ActsIn != nil {
+		t.Errorf("cleared: %+v", mcp)
+	}
+}
