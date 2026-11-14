@@ -33,7 +33,20 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUserNew(w http.ResponseWriter, r *http.Request) {
-	s.render(w, r, http.StatusOK, "admin/users/form", map[string]any{"Title": "Add user", "Form": store.User{}})
+	s.renderNewUser(w, r, http.StatusOK, map[string]any{"Form": store.User{}})
+}
+
+// renderNewUser shows the add-user form, with the roles a new person gets
+// from the apps' defaults.
+func (s *Server) renderNewUser(w http.ResponseWriter, r *http.Request, status int, data map[string]any) {
+	defaults, err := s.store.DefaultRoles()
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	data["Title"] = "Add user"
+	data["Defaults"] = defaults
+	s.render(w, r, status, "admin/users/form", data)
 }
 
 func (s *Server) handleUserCreate(w http.ResponseWriter, r *http.Request) {
@@ -53,13 +66,22 @@ func (s *Server) handleUserCreate(w http.ResponseWriter, r *http.Request) {
 		u.ID = id
 	}
 	if len(errs) > 0 {
-		s.render(w, r, http.StatusUnprocessableEntity, "admin/users/form", map[string]any{"Title": "Add user", "Form": u, "Errors": errs})
+		s.renderNewUser(w, r, http.StatusUnprocessableEntity, map[string]any{"Form": u, "Errors": errs})
 		return
 	}
-	detail := ""
-	if u.IsAdmin {
-		detail = "as a user admin"
+	given, err := s.store.ApplyDefaultRoles(u.ID, currentUser(r).ID)
+	if err != nil {
+		s.serverError(w, r, err)
+		return
 	}
+	var d []string
+	if u.IsAdmin {
+		d = append(d, "as a user admin")
+	}
+	if len(given) > 0 {
+		d = append(d, "default roles "+strings.Join(given, ", "))
+	}
+	detail := strings.Join(d, "; ")
 	s.audit(r, store.AuditEvent{Action: "user.create", Target: u.ID, Detail: detail})
 	s.redirect(w, r, "/admin/users", "User "+u.Username+" added.")
 }

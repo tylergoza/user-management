@@ -3,6 +3,7 @@ package store
 import (
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -194,5 +195,94 @@ func TestGrantKeepsSessionAlive(t *testing.T) {
 	st.DB.Exec(`UPDATE sessions SET expires_at = '2000-01-01 00:00:00' WHERE id = ?`, sess.ID)
 	if _, err := st.CheckGrant(grant, app.ID, ttl); !errors.Is(err, ErrNotFound) {
 		t.Errorf("expired session: got %v", err)
+	}
+}
+
+// TestMigration002 runs 001 alone on a database holding apps, users,
+// access, sessions, grants and codes, as the live one does, then 002:
+// old rows keep working and the new columns have their defaults.
+func TestMigration002(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.db")
+	old, err := openAt(path, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := old.DB.Exec(`INSERT INTO apps (client_id, name, base_url, redirect_uris, roles, secret_hash) VALUES
+		('planner', 'Planner', 'https://p.test', 'https://p.test/cb', 'user,admin', 'x')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := old.DB.Exec(`SELECT acts_in FROM apps`); err == nil {
+		t.Fatal("001 alone shouldn't have acts_in")
+	}
+	id := mustUser(t, old, "sam", false)
+	old.DB.Exec(`INSERT INTO user_apps (user_id, app_id, role) VALUES (?, 1, 'user')`, id)
+	ttl := 30 * 24 * time.Hour
+	sess, _ := old.CreateSession(id, "", "", ttl)
+	grant := RandomToken()
+	old.DB.Exec(`INSERT INTO grants (id_hash, app_id, user_id, session_id) VALUES (?, 1, ?, ?)`, HashToken(grant), id, sess.ID)
+	old.DB.Exec(`INSERT INTO auth_codes (code_hash, app_id, user_id, session_id, redirect_uri, pkce_challenge, expires_at)
+		VALUES ('c', 1, ?, ?, 'https://p.test/cb', 'x', '2999-01-01 00:00:00')`, id, sess.ID)
+	old.Close()
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	app, err := st.GetAppByClientID("planner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if app.ActsIn != nil || app.AcceptsFrom != nil || app.DefaultRole != "" || strings.Join(app.Roles, ",") != "user,admin" {
+		t.Errorf("migrated app: %+v", app)
+	}
+	if g, err := st.CheckGrant(grant, app.ID, ttl); err != nil || g.Role != "user" {
+		t.Errorf("old grant: %+v %v", g, err)
+	}
+	var codes int
+	st.DB.QueryRow(`SELECT COUNT(*) FROM auth_codes`).Scan(&codes)
+	if codes != 1 {
+		t.Error("old codes should be kept")
+	}
+	if _, err := st.CreateDelegatedToken(grant, app.ID, id); err != nil {
+		t.Errorf("delegated_tokens: %v", err)
+	}
+	// Deleting the session takes the grant and its tokens with it.
+	st.DB.Exec(`DELETE FROM sessions WHERE id = ?`, sess.ID)
+	var tokens int
+	st.DB.QueryRow(`SELECT COUNT(*) FROM delegated_tokens`).Scan(&tokens)
+	if tokens != 0 {
+		t.Error("tokens should die with the session")
+	}
+}
+
+func TestChangeAppRolesKeepsDefault(t *testing.T) {
+	st := openTest(t)
+	app := &App{ClientID: "web", Name: "Website", RedirectURIs: []string{"https://w.test/cb"}, Roles: []string{"user", "admin"}, DefaultRole: "user"}
+	if _, err := st.CreateApp(app); err != nil {
+		t.Fatal(err)
+	}
+	// A rename carries the default along.
+	if _, err := st.ChangeAppRoles(app.ID, [][2]string{{"user", "member"}}, []string{"member", "admin"}, nil, false); err != nil {
+		t.Fatal(err)
+	}
+	if a, _ := st.GetApp(app.ID); a.DefaultRole != "member" {
+		t.Errorf("default after rename: %q", a.DefaultRole)
+	}
+	// Removing it is refused, unless the default changes too.
+	var de *DefaultRoleError
+	if _, err := st.ChangeAppRoles(app.ID, nil, []string{"editor", "admin"}, nil, false); !errors.As(err, &de) {
+		t.Errorf("removing the default: %v", err)
+	}
+	editor := "editor"
+	if _, err := st.ChangeAppRoles(app.ID, nil, []string{"editor", "admin"}, &editor, false); err != nil {
+		t.Fatal(err)
+	}
+	if a, _ := st.GetApp(app.ID); a.DefaultRole != "editor" || strings.Join(a.Roles, ",") != "editor,admin" {
+		t.Errorf("after changing both: %+v", a)
+	}
+	admin := "admin"
+	if _, err := st.ChangeAppRoles(app.ID, nil, []string{"editor", "admin"}, &admin, false); err == nil {
+		t.Error("admin as the default should be refused")
 	}
 }

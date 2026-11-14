@@ -29,6 +29,9 @@
           <input type="checkbox" name="is_admin" value="1" {{if .Form.IsAdmin}}checked{{end}}>
           User admin (can add people, reset passwords and decide who can use which app)
         </label>
+        {{if and (not .Form.ID) .Defaults}}
+          <p class="hint">They will get: {{range $i, $d := .Defaults}}{{if $i}}, {{end}}{{$d}}{{end}}. You can change any of these on their page afterwards.</p>
+        {{end}}
         <fieldset class="fieldset">
           <legend>{{if .Form.ID}}Reset password <span class="optional">leave blank to keep it</span>{{else}}Password{{end}}</legend>
           {{template "password-fields" (dict "Required" (not .Form.ID))}}

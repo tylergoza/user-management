@@ -37,6 +37,31 @@
           <input id="roles" name="roles" value="{{.Form.Roles}}" required>
           <p class="hint">Comma-separated, and must include <code>admin</code>. The app decides what each role can do.</p>
         </div>
+        <div class="field">
+          <label for="default_role">New users get role <span class="optional">optional</span></label>
+          <select id="default_role" name="default_role">
+            <option value="">No default</option>
+            {{$def := .Form.DefaultRole}}
+            {{range .Form.RoleList}}{{if ne . "admin"}}<option value="{{.}}" {{if eq . $def}}selected{{end}}>{{.}}</option>{{end}}{{end}}
+          </select>
+          <p class="hint">Given to people a user admin adds from now on. Never admin; people who already exist aren't changed. Save new roles first to pick one of them.</p>
+        </div>
+        {{if .OtherApps}}
+        <fieldset class="fieldset">
+          <legend>May act for users in <span class="optional">optional</span></legend>
+          {{range .OtherApps}}
+            <label class="check"><input type="checkbox" name="acts_in" value="{{.ClientID}}" {{if has $.Form.ActsIn .ClientID}}checked{{end}}> {{.Name}} <code>{{.ClientID}}</code></label>
+          {{end}}
+          <p class="hint">This app may get short per-app tokens to act for a signed-in person in these apps, only where they have a role. The other app must also accept tokens from this one.</p>
+        </fieldset>
+        <fieldset class="fieldset">
+          <legend>Accepts tokens from <span class="optional">optional</span></legend>
+          {{range .OtherApps}}
+            <label class="check"><input type="checkbox" name="accepts_from" value="{{.ClientID}}" {{if has $.Form.AcceptsFrom .ClientID}}checked{{end}}> {{.Name}} <code>{{.ClientID}}</code></label>
+          {{end}}
+          <p class="hint">This app takes per-app tokens from these apps, acting for its people with their role here. Tick only apps you trust with that.</p>
+        </fieldset>
+        {{end}}
         <div class="form__actions">
           <button type="submit" class="btn btn--primary">{{if .Form.ID}}Save app{{else}}Register app{{end}}</button>
           <a class="btn btn--ghost" href="/admin/apps">Cancel</a>

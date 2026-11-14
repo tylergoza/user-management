@@ -33,6 +33,15 @@ type Options struct {
 	CopyAccess string      // client ID of the app to copy access from, or ""
 	DryRun     bool
 	Rotate     bool // make a new secret for an app that's already registered
+
+	// Per-app tokens and new users' role. Each is only changed on an
+	// existing app when its flag is given (the *Set fields).
+	ActsIn         []string // --acts-in: client IDs this app may act for users in
+	ActsInSet      bool
+	AcceptsFrom    []string // --accepts-from: client IDs whose tokens this app takes
+	AcceptsFromSet bool
+	DefaultRole    string // --default-role; "" for none
+	DefaultRoleSet bool
 }
 
 // Usage is the command's help text.
@@ -61,6 +70,18 @@ page does. Its redirect URI is URL/auth/callback and its address is URL.
                           working at once, so the app can't sign anyone in
                           until it's redeployed with the new one. Does
                           nothing for a new app (it gets a secret anyway)
+  --acts-in a,b           "May act for users in": client IDs of other registered
+                          apps this app may get per-app (umd_) tokens for, to act
+                          for a signed-in person. "" clears it
+  --accepts-from a,b      "Accepts tokens from": client IDs of other registered
+                          apps whose per-app tokens this app takes. "" clears it
+  --default-role ROLE     the role people a user admin adds from now on get in
+                          this app; one of its roles, never admin. "" for none
+                          (the default). Renaming it with --rename-role carries
+                          it along; removing it from --roles is refused unless
+                          --default-role changes it too
+                          For an app that's already registered, these three
+                          change it only when given
   --dry-run               show what would happen without changing anything
 
 A new app's SSO_CLIENT_ID and SSO_CLIENT_SECRET are printed once; save the
@@ -87,6 +108,10 @@ func ParseArgs(args []string, errOut io.Writer) (Options, error) {
 	fs.StringVar(&o.CopyAccess, "copy-access-from", "", "")
 	fs.BoolVar(&o.DryRun, "dry-run", false, "")
 	fs.BoolVar(&o.Rotate, "rotate-secret", false, "")
+	var actsIn, acceptsFrom string
+	fs.StringVar(&actsIn, "acts-in", "", "")
+	fs.StringVar(&acceptsFrom, "accepts-from", "", "")
+	fs.StringVar(&o.DefaultRole, "default-role", "", "")
 	rest := args
 	for {
 		if err := fs.Parse(rest); errors.Is(err, flag.ErrHelp) {
@@ -117,10 +142,37 @@ func ParseArgs(args []string, errOut io.Writer) (Options, error) {
 		return o, errors.New("register-app: --url must be a full web address like https://events.example.org")
 	}
 	fs.Visit(func(f *flag.Flag) {
-		if f.Name == "roles" {
+		switch f.Name {
+		case "roles":
 			o.RolesSet = true
+		case "acts-in":
+			o.ActsInSet = true
+		case "accepts-from":
+			o.AcceptsFromSet = true
+		case "default-role":
+			o.DefaultRoleSet = true
 		}
 	})
+	for _, l := range []struct {
+		flag string
+		in   string
+		out  *[]string
+	}{{"--acts-in", actsIn, &o.ActsIn}, {"--accepts-from", acceptsFrom, &o.AcceptsFrom}} {
+		for _, id := range strings.Split(l.in, ",") {
+			if id = strings.TrimSpace(id); id == "" || slices.Contains(*l.out, id) {
+				continue
+			} else if !clientIDRe.MatchString(id) {
+				return o, fmt.Errorf("register-app: %s: %q isn't a client ID", l.flag, id)
+			} else if id == o.ClientID {
+				return o, fmt.Errorf("register-app: %s can't name the app itself", l.flag)
+			}
+			*l.out = append(*l.out, id)
+		}
+	}
+	o.DefaultRole = strings.ToLower(strings.TrimSpace(o.DefaultRole))
+	if o.DefaultRole == "admin" {
+		return o, errors.New("register-app: --default-role can't be admin: new users get it without anyone choosing")
+	}
 	for _, r := range strings.Split(roles, ",") {
 		if r = strings.ToLower(strings.TrimSpace(r)); r == "" || slices.Contains(o.Roles, r) {
 			continue
@@ -131,6 +183,9 @@ func ParseArgs(args []string, errOut io.Writer) (Options, error) {
 	}
 	if !slices.Contains(o.Roles, "admin") {
 		return o, errors.New("register-app: --roles must include admin: app admins manage people's access from inside the app")
+	}
+	if o.DefaultRole != "" && o.RolesSet && !slices.Contains(o.Roles, o.DefaultRole) {
+		return o, fmt.Errorf("register-app: --default-role %s must be in --roles", o.DefaultRole)
 	}
 	for _, rn := range renames {
 		old, nw, ok := strings.Cut(rn, "=")
@@ -175,6 +230,19 @@ func Run(st *store.Store, o Options, out io.Writer) error {
 		}
 	}
 
+	for _, l := range []struct {
+		flag string
+		ids  []string
+	}{{"--acts-in", o.ActsIn}, {"--accepts-from", o.AcceptsFrom}} {
+		for _, id := range l.ids {
+			if _, err := st.GetAppByClientID(id); errors.Is(err, store.ErrNotFound) {
+				return fmt.Errorf("%s: no app is registered as %q", l.flag, id)
+			} else if err != nil {
+				return err
+			}
+		}
+	}
+
 	app, err := st.GetAppByClientID(o.ClientID)
 	exists := true
 	if errors.Is(err, store.ErrNotFound) {
@@ -202,18 +270,29 @@ func Run(st *store.Store, o Options, out io.Writer) error {
 				return err
 			}
 		}
+		if err := changeDelegation(st, app, o, out); err != nil {
+			return err
+		}
 	case o.DryRun:
-		fmt.Fprintf(out, "Would register %s as %q: address %s, redirect URI %s/auth/callback, roles %s.\n",
-			o.Name, o.ClientID, o.URL, o.URL, strings.Join(o.Roles, ", "))
+		if o.DefaultRole != "" && !slices.Contains(o.Roles, o.DefaultRole) {
+			return fmt.Errorf("--default-role %s must be one of the app's roles (%s)", o.DefaultRole, strings.Join(o.Roles, ", "))
+		}
+		fmt.Fprintf(out, "Would register %s as %q: address %s, redirect URI %s/auth/callback, roles %s%s.\n",
+			o.Name, o.ClientID, o.URL, o.URL, strings.Join(o.Roles, ", "), delegationSummary(o.ActsIn, o.AcceptsFrom, o.DefaultRole))
 		app = &store.App{Name: o.Name, ClientID: o.ClientID, Roles: o.Roles}
 	default:
+		if o.DefaultRole != "" && !slices.Contains(o.Roles, o.DefaultRole) {
+			return fmt.Errorf("--default-role %s must be one of the app's roles (%s)", o.DefaultRole, strings.Join(o.Roles, ", "))
+		}
 		app = &store.App{ClientID: o.ClientID, Name: o.Name, BaseURL: o.URL,
-			RedirectURIs: []string{o.URL + "/auth/callback"}, Roles: o.Roles}
+			RedirectURIs: []string{o.URL + "/auth/callback"}, Roles: o.Roles,
+			ActsIn: o.ActsIn, AcceptsFrom: o.AcceptsFrom, DefaultRole: o.DefaultRole}
 		secret, err := st.CreateApp(app)
 		if err != nil {
 			return fmt.Errorf("register %s: %w", o.ClientID, err)
 		}
-		st.Audit(store.AuditEvent{Action: "app.create", App: app.ID, Detail: "register-app: " + app.ClientID})
+		st.Audit(store.AuditEvent{Action: "app.create", App: app.ID,
+			Detail: "register-app: " + app.ClientID + delegationSummary(o.ActsIn, o.AcceptsFrom, o.DefaultRole)})
 		fmt.Fprintf(out, "Registered %s.\n\nSSO_CLIENT_ID=%s\nSSO_CLIENT_SECRET=%s\n\nSave the secret now, e.g. as UM_%s_SECRET: it isn't shown again.\n",
 			app.Name, app.ClientID, secret, strings.ToUpper(strings.ReplaceAll(app.ClientID, "-", "_")))
 	}
@@ -252,7 +331,17 @@ func changeRoles(st *store.Store, app *store.App, o Options, out io.Writer) erro
 			return fmt.Errorf("--rename-role %s=%s: %s must be in the app's roles", rn[0], rn[1], rn[1])
 		}
 	}
-	moves, err := st.ChangeAppRoles(app.ID, o.Renames, roles, o.DryRun)
+	var newDefault *string
+	def := app.DefaultRole
+	for _, rn := range o.Renames {
+		if def == rn[0] {
+			def = rn[1]
+		}
+	}
+	if o.DefaultRoleSet {
+		newDefault, def = &o.DefaultRole, o.DefaultRole
+	}
+	moves, err := st.ChangeAppRoles(app.ID, o.Renames, roles, newDefault, o.DryRun)
 	if err != nil {
 		return fmt.Errorf("change roles of %s: %w", app.ClientID, err)
 	}
@@ -288,7 +377,85 @@ func changeRoles(st *store.Store, app *store.App, o Options, out io.Writer) erro
 				Detail: "register-app: roles " + strings.Join(roles, ", ")})
 		}
 	}
-	app.Roles = roles
+	if def != app.DefaultRole {
+		if o.DryRun {
+			fmt.Fprintf(out, "Would set: new users get %s.\n", listOrNone([]string{def}))
+		} else {
+			fmt.Fprintf(out, "Set: new users get %s.\n", listOrNone([]string{def}))
+			st.Audit(store.AuditEvent{Action: "app.update", App: app.ID, Detail: "register-app: new users get " + listOrNone([]string{def})})
+		}
+	}
+	app.Roles, app.DefaultRole = roles, def
+	return nil
+}
+
+// delegationSummary describes the per-app token lists and default role,
+// for output and the audit log ("" when none is set).
+func delegationSummary(actsIn, acceptsFrom []string, defaultRole string) string {
+	var c []string
+	if len(actsIn) > 0 {
+		c = append(c, "may act for users in "+strings.Join(actsIn, ", "))
+	}
+	if len(acceptsFrom) > 0 {
+		c = append(c, "accepts tokens from "+strings.Join(acceptsFrom, ", "))
+	}
+	if defaultRole != "" {
+		c = append(c, "new users get "+defaultRole)
+	}
+	if len(c) == 0 {
+		return ""
+	}
+	return "; " + strings.Join(c, "; ")
+}
+
+func listOrNone(l []string) string {
+	if len(l) == 0 {
+		return "(none)"
+	}
+	return strings.Join(l, ", ")
+}
+
+// changeDelegation sets an existing app's per-app token lists and default
+// role, for the flags that were given. Run after changeRoles, so app.Roles
+// and app.DefaultRole are already the new ones (changeRoles saves the
+// default when it runs).
+func changeDelegation(st *store.Store, app *store.App, o Options, out io.Writer) error {
+	actsIn, acceptsFrom, def := app.ActsIn, app.AcceptsFrom, app.DefaultRole
+	if o.ActsInSet {
+		actsIn = o.ActsIn
+	}
+	if o.AcceptsFromSet {
+		acceptsFrom = o.AcceptsFrom
+	}
+	if o.DefaultRoleSet {
+		def = o.DefaultRole
+	}
+	if def != "" && !app.HasRole(def) {
+		return fmt.Errorf("--default-role %s must be one of the app's roles (%s)", def, strings.Join(app.Roles, ", "))
+	}
+	var c []string
+	if !slices.Equal(actsIn, app.ActsIn) {
+		c = append(c, "may act for users in "+listOrNone(actsIn))
+	}
+	if !slices.Equal(acceptsFrom, app.AcceptsFrom) {
+		c = append(c, "accepts tokens from "+listOrNone(acceptsFrom))
+	}
+	if def != app.DefaultRole {
+		c = append(c, "new users get "+listOrNone([]string{def}))
+	}
+	if len(c) == 0 {
+		return nil
+	}
+	if o.DryRun {
+		fmt.Fprintf(out, "Would set: %s.\n", strings.Join(c, "; "))
+		return nil
+	}
+	if err := st.SetAppDelegation(app.ID, actsIn, acceptsFrom, def); err != nil {
+		return fmt.Errorf("change %s: %w", app.ClientID, err)
+	}
+	st.Audit(store.AuditEvent{Action: "app.update", App: app.ID, Detail: "register-app: " + strings.Join(c, "; ")})
+	fmt.Fprintf(out, "Set: %s.\n", strings.Join(c, "; "))
+	app.ActsIn, app.AcceptsFrom, app.DefaultRole = actsIn, acceptsFrom, def
 	return nil
 }
 

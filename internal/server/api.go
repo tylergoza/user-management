@@ -21,6 +21,13 @@ import (
 //	PATCH /api/v1/apps/{client_id}/users/{id}  {"role": ...} and/or {"suspended": ...}
 //	                                           X-Acting-Grant: the app admin making the change
 //
+// Per-app tokens (delegation.go): an app acting for a signed-in person in
+// another app.
+//
+//	GET   /api/v1/me/apps                      X-Grant: apps this app may act in for them, with their role
+//	POST  /api/v1/delegate                     X-Grant, {"audience": client_id}: a umd_ token for that app
+//	GET   /api/v1/token                        X-Token: the audience checks a umd_ token
+//
 // Grant IDs go in headers rather than the path, so they don't end up in
 // request logs.
 
@@ -30,6 +37,9 @@ func (s *Server) apiRoutes(mux *http.ServeMux) {
 	api("POST /api/v1/logout", s.apiLogout)
 	api("GET /api/v1/apps/{client_id}/users", s.apiAppUsers)
 	api("PATCH /api/v1/apps/{client_id}/users/{id}", s.apiAppUserUpdate)
+	api("GET /api/v1/me/apps", s.apiMeApps)
+	api("POST /api/v1/delegate", s.apiDelegate)
+	api("GET /api/v1/token", s.apiToken)
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusNotFound, "not_found", "no such endpoint")
 	})
