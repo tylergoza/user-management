@@ -24,7 +24,11 @@ const DelegatedPrefix = "umd_"
 // person's role.
 func (s *Store) CreateDelegatedToken(grantID string, audienceAppID, userID int64) (string, error) {
 	token := DelegatedPrefix + RandomToken()
-	_, err := s.DB.Exec(`INSERT INTO delegated_tokens (token_hash, grant_hash, audience_app_id, user_id, expires_at) VALUES (?, ?, ?, ?, ?)`,
+	col := "grant_hash"
+	if strings.HasPrefix(grantID, AIGrantPrefix) {
+		col = "ai_grant_hash"
+	}
+	_, err := s.DB.Exec(`INSERT INTO delegated_tokens (token_hash, `+col+`, audience_app_id, user_id, expires_at) VALUES (?, ?, ?, ?, ?)`,
 		HashToken(token), HashToken(grantID), audienceAppID, userID, sqlTime(time.Now().Add(DelegatedTTL)))
 	if err != nil {
 		return "", err
@@ -52,15 +56,20 @@ func (s *Store) CheckDelegatedToken(token string, audienceAppID int64) (*Delegat
 	var d Delegated
 	var viaID int64
 	now := sqlTime(time.Now())
+	// Either kind of grant: a session grant needs its session to be live;
+	// an AI grant has none. Both need the account on and the person
+	// unsuspended in the grant's app and the audience.
 	err := scanUser(s.DB.QueryRow(`
-		SELECT `+userColsOf("u.")+`, ua.role, g.app_id
+		SELECT `+userColsOf("u.")+`, ua.role, COALESCE(g.app_id, ag.app_id)
 		FROM delegated_tokens d
-		JOIN grants g ON g.id_hash = d.grant_hash AND g.user_id = d.user_id
-		JOIN sessions s ON s.id = g.session_id
+		LEFT JOIN grants g ON g.id_hash = d.grant_hash AND g.user_id = d.user_id
+		LEFT JOIN sessions s ON s.id = g.session_id
+		LEFT JOIN ai_grants ag ON ag.id_hash = d.ai_grant_hash AND ag.user_id = d.user_id
 		JOIN users u ON u.id = d.user_id
 		JOIN user_apps ua ON ua.user_id = d.user_id AND ua.app_id = d.audience_app_id
-		JOIN user_apps ga ON ga.user_id = d.user_id AND ga.app_id = g.app_id
-		WHERE d.token_hash = ? AND d.audience_app_id = ? AND d.expires_at > ? AND s.expires_at > ?
+		JOIN user_apps ga ON ga.user_id = d.user_id AND ga.app_id = COALESCE(g.app_id, ag.app_id)
+		WHERE d.token_hash = ? AND d.audience_app_id = ? AND d.expires_at > ?
+			AND ((g.id_hash IS NOT NULL AND s.expires_at > ?) OR ag.id_hash IS NOT NULL)
 			AND u.disabled = 0 AND ua.suspended = 0 AND ga.suspended = 0`,
 		HashToken(token), audienceAppID, now, now), &d.User, &d.Role, &viaID)
 	if err != nil {

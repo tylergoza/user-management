@@ -46,6 +46,8 @@ var auditLabels = map[string]string{
 	"user.enable":          "Re-enabled user",
 	"session.revoke":       "Signed out a device",
 	"session.revoke_other": "Signed out all other devices",
+	"aigrant.create":       "Connected an AI tool",
+	"aigrant.revoke":       "Cut off an AI connection",
 	"settings.update":      "Changed settings",
 	"backup.download":      "Downloaded a backup",
 	"app.signin":           "Signed in to an app",

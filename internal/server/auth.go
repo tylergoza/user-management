@@ -212,6 +212,11 @@ func (s *Server) accountData(r *http.Request, data map[string]any) (map[string]a
 	if err != nil {
 		return nil, err
 	}
+	aiGrants, err := s.store.ListAIGrants(u.ID)
+	if err != nil {
+		return nil, err
+	}
+	data["AIGrants"] = aiGrants
 	data["Title"] = "My account"
 	data["Apps"] = apps
 	data["Sessions"] = sessions
@@ -349,4 +354,17 @@ func (l *loginLimiter) reset(key string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	delete(l.hits, key)
+}
+
+// handleAIGrantDelete lets a person cut off one of their AI connections.
+func (s *Server) handleAIGrantDelete(w http.ResponseWriter, r *http.Request) {
+	ok, err := s.store.RevokeUserAIGrant(currentUser(r).ID, r.PathValue("id"))
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	if ok {
+		s.audit(r, store.AuditEvent{Action: "aigrant.revoke", Target: currentUser(r).ID, Detail: "by the person"})
+	}
+	s.redirect(w, r, "/account", "That AI connection has been cut off.")
 }

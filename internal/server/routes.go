@@ -51,6 +51,7 @@ func (s *Server) routes() http.Handler {
 	auth("POST /account/password", s.handleAccountPassword)
 	auth("POST /account/sessions/{id}/delete", s.handleSessionDelete)
 	auth("POST /account/sessions/others", s.handleSessionDeleteOthers)
+	auth("POST /account/ai-grants/{id}/delete", s.handleAIGrantDelete)
 
 	// User admins
 	admin := func(pattern string, h http.HandlerFunc) { mux.Handle(pattern, s.requireAdmin(h)) }

@@ -168,6 +168,9 @@ func (s *Store) SetPassword(id int64, password string) error {
 	if _, err := tx.Exec(`DELETE FROM sessions WHERE user_id = ?`, id); err != nil {
 		return err
 	}
+	if _, err := tx.Exec(`DELETE FROM ai_grants WHERE user_id = ?`, id); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -184,6 +187,9 @@ func (s *Store) SetDisabled(id int64, disabled bool) error {
 	}
 	if disabled {
 		if _, err := tx.Exec(`DELETE FROM sessions WHERE user_id = ?`, id); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`DELETE FROM ai_grants WHERE user_id = ?`, id); err != nil {
 			return err
 		}
 	}

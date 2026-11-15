@@ -132,3 +132,51 @@ func (s *Server) apiToken(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"user": apiUserOf(&d.User, d.Role), "via": d.Via})
 }
+
+// apiAIGrantCreate swaps the person's browser-session grant (X-Grant, from
+// the sign-in the app just did) for an AI grant: its own grant, not tied
+// to the browser session, so it survives signing out here. Only an app
+// that may act for users (a "May act for users in" list) gets one (403
+// not_allowed). See store/aigrants.go for what ends it.
+func (s *Server) apiAIGrantCreate(w http.ResponseWriter, r *http.Request) {
+	app := currentApp(r)
+	if len(app.ActsIn) == 0 {
+		apiError(w, http.StatusForbidden, "not_allowed", "this app may not hold long-lived grants (it has no \"May act for users in\" list)")
+		return
+	}
+	g, grantID, ok := s.actingGrant(w, r)
+	if !ok {
+		return
+	}
+	if strings.HasPrefix(grantID, store.AIGrantPrefix) {
+		// An AI grant can't mint more AI grants.
+		apiError(w, http.StatusUnauthorized, "invalid_grant", "send the sign-in grant, not an AI grant")
+		return
+	}
+	id, err := s.store.CreateAIGrant(app, g.User.ID)
+	if err != nil {
+		s.apiServerError(w, r, err)
+		return
+	}
+	s.audit(r, store.AuditEvent{Actor: g.User.ID, Action: "aigrant.create", Target: g.User.ID, Detail: "via " + app.ClientID})
+	writeJSON(w, http.StatusOK, map[string]any{"grant": id})
+}
+
+// apiAIGrantRevoke ends an AI grant the app holds (X-Grant). Revoking one
+// that's already gone is fine, so the app can call it without worrying.
+func (s *Server) apiAIGrantRevoke(w http.ResponseWriter, r *http.Request) {
+	grantID := r.Header.Get("X-Grant")
+	if !strings.HasPrefix(grantID, store.AIGrantPrefix) {
+		apiError(w, http.StatusBadRequest, "invalid_request", "send the AI grant (umai_...) in X-Grant")
+		return
+	}
+	uid, err := s.store.RevokeAIGrant(grantID, currentApp(r).ID)
+	if err != nil {
+		s.apiServerError(w, r, err)
+		return
+	}
+	if uid != 0 {
+		s.audit(r, store.AuditEvent{Actor: uid, Action: "aigrant.revoke", Target: uid, Detail: "by " + currentApp(r).ClientID})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"revoked": uid != 0})
+}

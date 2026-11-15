@@ -28,6 +28,13 @@ import (
 //	POST  /api/v1/delegate                     X-Grant, {"audience": client_id}: a umd_ token for that app
 //	GET   /api/v1/token                        X-Token: the audience checks a umd_ token
 //
+// AI grants (aigrants.go): a grant for an app that acts for people over
+// long periods, not tied to the browser session here.
+//
+//	POST   /api/v1/ai-grants                   X-Grant: a session grant; the app needs "May act for users in"
+//	                                           -> {"grant": "umai_..."}, usable like any grant
+//	DELETE /api/v1/ai-grants                   X-Grant: the umai_ grant to revoke (always 200)
+//
 // Grant IDs go in headers rather than the path, so they don't end up in
 // request logs.
 
@@ -40,6 +47,8 @@ func (s *Server) apiRoutes(mux *http.ServeMux) {
 	api("GET /api/v1/me/apps", s.apiMeApps)
 	api("POST /api/v1/delegate", s.apiDelegate)
 	api("GET /api/v1/token", s.apiToken)
+	api("POST /api/v1/ai-grants", s.apiAIGrantCreate)
+	api("DELETE /api/v1/ai-grants", s.apiAIGrantRevoke)
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusNotFound, "not_found", "no such endpoint")
 	})

@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -84,7 +85,13 @@ type Grant struct {
 // An app checking counts as using the session, so its expiry slides
 // forward to ttl from now, as browsing here would. Someone who only uses
 // the apps stays signed in.
+//
+// An AI grant (umai_ prefix, see aigrants.go) is checked the same way
+// but has no session: it only needs the account on and the app role.
 func (s *Store) CheckGrant(grantID string, appID int64, ttl time.Duration) (*Grant, error) {
+	if strings.HasPrefix(grantID, AIGrantPrefix) {
+		return s.checkAIGrant(grantID, appID)
+	}
 	var g Grant
 	var expires, lastSeen string
 	err := scanUser(s.DB.QueryRow(`

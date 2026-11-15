@@ -62,6 +62,23 @@
         </div>
       {{end}}
     </section>
+    {{if .AIGrants}}
+    <section class="card">
+      <h2>AI connections</h2>
+      <p class="hint">These keep working after you sign out here. They end when you change your password, your account is turned off, or you revoke them.</p>
+      <ul class="session-list">
+        {{range .AIGrants}}
+          <li>
+            <span>
+              {{.AppName}}
+              <span class="muted small">Connected {{ago .CreatedAt}} · last used {{ago .LastCheckedAt}}</span>
+            </span>
+            {{template "post-button" (dict "Action" (printf "/account/ai-grants/%s/delete" .ID) "CSRF" $.CSRF "Label" "Revoke" "Class" "btn--danger-ghost" "Confirm" "Cut off this AI connection?")}}
+          </li>
+        {{end}}
+      </ul>
+    </section>
+    {{end}}
   </div>
 </div>
 {{end}}

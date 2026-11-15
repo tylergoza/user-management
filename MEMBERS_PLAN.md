@@ -13,7 +13,7 @@ and default roles are built, in `002_delegation.sql`. The acting app calls
 the person), instead of the bare browser grant described below. The
 public/browser parts remain: public redirect URIs and grants, the public
 `/token` path, CORS, the 8-hour idle, `requireBrowserGrant`, and the docs. They
-go in a later migration (`003_…`) and plug into `actingGrant`
+go in a later migration (`004_…`; `003_ai_grants.sql` is taken) and plug into `actingGrant`
 (`internal/server/delegation.go`), which is the one place the grant is read.
 
 `001_initial.sql` is frozen: User Management is live at
@@ -38,7 +38,7 @@ TABLE` need no table rebuild, so the `noForeignKeys` flag
 
 ## Steps
 
-### 1. Migration `002_members.sql` (built as `002_delegation.sql`; the public columns go in `003_…`)
+### 1. Migration `002_members.sql` (built as `002_delegation.sql`; the public columns go in `004_…`)
 - [x] `apps`: add `acts_in TEXT NOT NULL DEFAULT ''` ("May act for users in": client IDs, comma separated), `accepts_from TEXT NOT NULL DEFAULT ''` ("Accepts tokens from": client IDs), `default_role TEXT NOT NULL DEFAULT ''` (empty means no default)
 - [ ] `apps`: add `public_redirect_uris TEXT NOT NULL DEFAULT ''` (one per line, like `redirect_uris`)
 - [ ] `grants`: add `public INTEGER NOT NULL DEFAULT 0` (1 for a grant made by a public redirect URI). Existing grants stay 0

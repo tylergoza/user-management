@@ -68,6 +68,27 @@ calendar (8120) and member directory (8130) can run alongside it.
 | Sign-in | Passwords are bcrypt hashes; session tokens are stored only as SHA-256 hashes. Sessions last 30 days from last use. Sign-in attempts are limited per address and per username. |
 | Offline | Installable as an app. No pages are kept offline, since account pages shouldn't linger on a device. |
 
+### AI grants API
+
+An app with a "May act for users in" list (the MCP server) can hold a
+person's grant without a browser session, so signing out of this site
+doesn't cut off their AI connection. Both calls use the app's client
+ID and secret (HTTP Basic), like `/api/v1/delegate`, and the grant goes
+in a header.
+
+| Call | Does |
+|------|------|
+| `POST /api/v1/ai-grants` with `X-Grant: <session grant>` (from the sign-in the app just finished) | `200 {"grant": "umai_..."}`. 403 `not_allowed` if the app has no "May act for users in" list; 401 `invalid_grant` for a bad or AI grant; 401 `invalid_client` for a wrong secret. |
+| `DELETE /api/v1/ai-grants` with `X-Grant: <umai_ grant>` | `200 {"revoked": true}` (`false` if it was already gone). 400 if the header isn't an `umai_` grant. |
+
+An `umai_` grant works anywhere a grant does: `GET /api/v1/grant`,
+`GET /api/v1/me/apps` and `POST /api/v1/delegate` (and the `umd_` tokens
+made from it). It ends when the password is changed or reset, the account
+is disabled, the person loses or has suspended their role in that app, the
+app's "May act for users in" list is emptied, or it's revoked (by the app
+as above, or by the person on **My account > AI connections**). Only its
+hash is stored. Migration `003_ai_grants.sql`.
+
 ## Configuration
 
 Set with a flag or an environment variable. Flags go **before** any command.
